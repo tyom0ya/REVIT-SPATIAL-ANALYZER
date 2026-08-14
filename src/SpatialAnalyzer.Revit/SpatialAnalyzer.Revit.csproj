@@ -1,0 +1,75 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Autodesk adapter layer: everything that touches the Revit API lives
+    here, and Revit data is copied into plain owned types before it reaches
+    SpatialAnalyzer.Core.
+
+    Targets net8.0-windows because Revit 2025 is itself .NET 8 hosted.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>SpatialAnalyzer.Revit</AssemblyName>
+    <RootNamespace>SpatialAnalyzer.Revit</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    MSB3277 is suppressed here, and only here.
+
+    Revit's installation directory contains its own copies of several framework
+    assemblies (WindowsBase, System.Drawing, Microsoft.VisualBasic) alongside
+    RevitAPIUI.dll. Because our HintPath points into that directory, MSBuild
+    finds those copies while chasing RevitAPIUI's dependencies and reports a
+    version conflict — roughly 1300 lines of it per build.
+
+    This was investigated rather than silenced on sight. Inspecting the resolved
+    reference set showed MSBuild already picks the correct assemblies:
+
+      * WindowsBase, System.Drawing and Microsoft.VisualBasic all resolve from
+        C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\8.0.30, i.e. the
+        .NET 8 reference pack, not from Revit.
+      * Exactly two references resolve out of the Revit directory, RevitAPI.dll
+        and RevitAPIUI.dll, both with Private=false.
+
+    So the conflict is reported and then correctly resolved, and the warning is
+    noise that would bury genuine warnings. Suppression is scoped to this
+    project so Core and the tests still surface MSB3277 if it ever appears
+    there. tools/verify.ps1 asserts the resolved reference set positively, which
+    is a stronger check than the warning it replaces.
+  -->
+  <PropertyGroup>
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <!--
+    Revit API assemblies.
+
+    Private=false is the MSBuild spelling of "Copy Local = false" and is the
+    important part of this file. Revit loads these from its own installation
+    directory at runtime; shipping our own copies risks binding an add-in
+    against assemblies that disagree with the host, and bloats the installer
+    with files Autodesk already provides.
+
+    tools/verify.ps1 enforces the same rule against real build output, because
+    a comment is not a guarantee.
+
+    Path comes from $(RevitApiDir) in Directory.Build.props so no machine
+    specific path is committed. Revit 2027 is present on some machines and is
+    NOT a valid reference source for this project.
+  -->
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitApiDir)\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitApiDir)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SpatialAnalyzer.Core\SpatialAnalyzer.Core.csproj" />
+  </ItemGroup>
+
+</Project>
