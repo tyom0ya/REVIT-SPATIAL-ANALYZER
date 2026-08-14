@@ -7,36 +7,35 @@ namespace SpatialAnalyzer.Revit.Diagnostics;
 
 /// <summary>
 /// Answers whether Revit's plan circuits can serve as candidate regions, by
-/// giving every circuit a room and reading the boundary that results.
+/// reading the boundary of the room in each circuit.
 ///
-/// The audit established that plan topology finds far more circuits than the
-/// model has rooms. What it could not say is whether the unroomed ones are real
-/// spaces or artefacts, because a circuit on its own exposes only an area, a
-/// side count and a point inside it. A room placed in the circuit exposes the
-/// boundary, and the boundary is what the rest of the project needs.
+/// A circuit on its own exposes only an area, a side count and a point inside
+/// it. The boundary is what the rest of the project needs, and a room is what
+/// exposes it. Circuits that already hold a room are read through that room;
+/// the rest are given a temporary one.
 ///
-/// The rooms created here are temporary. Everything read is copied into plain
-/// values before the transaction is rolled back, so the model is left exactly
-/// as it was found. Nothing is committed under any circumstance.
+/// Temporary rooms are removed by rolling the transaction back. Everything is
+/// copied into plain values first, and nothing is committed under any
+/// circumstance.
 /// </summary>
 public static class PlanCircuitProbe
 {
     /// <summary>
     /// Room boundaries are requested at the finish face because that is the
-    /// surface that encloses the space a person occupies, which is what the
+    /// surface enclosing the space a person occupies, which is what the
     /// analysis is about. The alternatives measure to wall centres or to the
-    /// structural core, both of which describe the construction rather than the
-    /// room.
+    /// structural core, both of which describe construction rather than room.
     /// </summary>
     private const SpatialElementBoundaryLocation BoundaryLocation = SpatialElementBoundaryLocation.Finish;
 
     /// <summary>
-    /// Endpoints closer together than this are treated as the same physical
-    /// location, and anything larger is reported as a real discontinuity rather
-    /// than closed up. This is a numerical tolerance for floating point
-    /// representation of one point, and is emphatically not licence to bridge a
-    /// gap in the model: roughly a third of a millimetre, far below any opening
-    /// a building could contain.
+    /// Endpoints closer together than this are treated as one physical
+    /// location. About a third of a millimetre: floating point representation
+    /// noise, far below any opening a building can contain.
+    ///
+    /// This is not licence to bridge a gap in the model. A discontinuity larger
+    /// than this is reported with its measured size and left open, because
+    /// joining it would manufacture an enclosure the building does not have.
     /// </summary>
     private const double CoincidentPointToleranceFeet = 0.001;
 
@@ -63,8 +62,8 @@ public static class PlanCircuitProbe
         double RoomAreaFeet2,
         double PerimeterFeet,
         List<LoopInfo> Loops,
-        int DoorCount,
-        List<string> DoorDescriptions,
+        List<string> DoorsOnBoundary,
+        int DoorsHostedByBoundaryWalls,
         string? Failure);
 
     public static DiagnosticReport Probe(AnalysisContext context)
@@ -79,6 +78,7 @@ public static class PlanCircuitProbe
         report.Item("Level", context.Level.Name);
         report.Item("Phase", context.Phase.Name);
         report.Item("Boundary location", BoundaryLocation.ToString());
+        report.Item("Closure tolerance (ft)", CoincidentPointToleranceFeet);
         report.Item("Generated", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
 
         int roomsBefore = CountRooms(document);
@@ -86,10 +86,9 @@ public static class PlanCircuitProbe
         List<CircuitInfo> circuits;
         TransactionStatus status;
 
-        // Everything that touches the model happens inside this block. The
-        // using statement matters: should anything throw, disposing an open
-        // transaction rolls it back, so there is no path that leaves temporary
-        // rooms behind.
+        // Everything touching the model happens in here. The using statement
+        // matters: if anything throws, disposing an open transaction rolls it
+        // back, so no path leaves temporary rooms behind.
         using (var transaction = new Transaction(document, "Spatial Analyzer plan circuit probe"))
         {
             transaction.Start();
@@ -115,6 +114,7 @@ public static class PlanCircuitProbe
         WriteSummary(report, circuits);
         WriteCircuits(report, circuits);
         WriteBoundaryCategoryCensus(report, circuits);
+        WriteUnattributedSegments(report, circuits);
 
         return report;
     }
@@ -132,11 +132,44 @@ public static class PlanCircuitProbe
 
         PlanTopology topology = document.get_PlanTopology(context.Level, context.Phase);
 
-        // Doors are hosted in walls, so they do not appear as boundary segments
-        // themselves. Associating a door with a space therefore means asking
-        // which wall hosts it and whether that wall bounds the space. This map
-        // is built once rather than per circuit.
+        // Rooms already present on this level, so a circuit that holds one is
+        // read through it rather than given a second. Revit makes a duplicate
+        // room redundant with zero area, which was the flaw in the first
+        // version of this probe.
+        List<Room> existingRooms = new FilteredElementCollector(document)
+            .OfCategory(BuiltInCategory.OST_Rooms)
+            .WhereElementIsNotElementType()
+            .OfType<Room>()
+            .Where(r => r.LevelId == context.Level.Id && r.Area > 0)
+            .ToList();
+
+        Dictionary<long, List<FamilyInstance>> doorsByHost = BuildDoorsByHost(document);
+
+        var options = new SpatialElementBoundaryOptions
+        {
+            SpatialElementBoundaryLocation = BoundaryLocation,
+        };
+
+        var circuits = new List<PlanCircuit>();
+        foreach (PlanCircuit circuit in topology.Circuits)
+        {
+            circuits.Add(circuit);
+        }
+
+        int index = 0;
+        foreach (PlanCircuit circuit in circuits.OrderByDescending(c => c.Area))
+        {
+            results.Add(Describe(document, context, circuit, index, options, existingRooms, doorsByHost));
+            index++;
+        }
+
+        return results;
+    }
+
+    private static Dictionary<long, List<FamilyInstance>> BuildDoorsByHost(Document document)
+    {
         var doorsByHost = new Dictionary<long, List<FamilyInstance>>();
+
         foreach (FamilyInstance door in new FilteredElementCollector(document)
                      .OfCategory(BuiltInCategory.OST_Doors)
                      .WhereElementIsNotElementType()
@@ -157,79 +190,52 @@ public static class PlanCircuitProbe
             list.Add(door);
         }
 
-        var options = new SpatialElementBoundaryOptions
-        {
-            SpatialElementBoundaryLocation = BoundaryLocation,
-        };
-
-        var circuits = new List<PlanCircuit>();
-        foreach (PlanCircuit circuit in topology.Circuits)
-        {
-            circuits.Add(circuit);
-        }
-
-        int index = 0;
-        foreach (PlanCircuit circuit in circuits.OrderByDescending(c => c.Area))
-        {
-            results.Add(Describe(document, circuit, index, options, doorsByHost));
-            index++;
-        }
-
-        return results;
+        return doorsByHost;
     }
 
     private static CircuitInfo Describe(
         Document document,
+        AnalysisContext context,
         PlanCircuit circuit,
         int index,
         SpatialElementBoundaryOptions options,
+        List<Room> existingRooms,
         Dictionary<long, List<FamilyInstance>> doorsByHost)
     {
         bool wasRoomLocated = circuit.IsRoomLocated;
-        Room? room = null;
         bool temporary = false;
 
         try
         {
-            // Passing null asks Revit to create a room for this circuit. A
-            // circuit that already holds one is given a room the same way; the
-            // rollback removes whatever was created either way.
-            room = document.Create.NewRoom(null, circuit);
-            temporary = true;
+            Room? room = wasRoomLocated ? FindExistingRoom(circuit, context, existingRooms) : null;
 
             if (room is null)
             {
-                return Failed(index, circuit, wasRoomLocated, "NewRoom returned null for this circuit.");
-            }
+                room = document.Create.NewRoom(null, circuit);
+                temporary = true;
 
-            // Boundaries are not available until the model has caught up with
-            // the newly created room.
-            document.Regenerate();
+                if (room is null)
+                {
+                    return Failed(index, circuit, wasRoomLocated, "NewRoom returned null for this circuit.");
+                }
+
+                // Boundaries are unavailable until the model catches up with a
+                // newly created room.
+                document.Regenerate();
+            }
 
             IList<IList<BoundarySegment>> loops = room.GetBoundarySegments(options);
 
             var loopInfos = new List<LoopInfo>();
-            var boundaryElementIds = new HashSet<long>();
+            var curvesByBoundaryElement = new Dictionary<long, List<Curve>>();
 
             foreach (IList<BoundarySegment> loop in loops)
             {
-                loopInfos.Add(DescribeLoop(document, loop, boundaryElementIds));
+                loopInfos.Add(DescribeLoop(document, loop, curvesByBoundaryElement));
             }
 
-            var doors = new List<FamilyInstance>();
-            foreach (long boundaryId in boundaryElementIds)
-            {
-                if (doorsByHost.TryGetValue(boundaryId, out List<FamilyInstance>? hosted))
-                {
-                    doors.AddRange(hosted);
-                }
-            }
-
-            List<FamilyInstance> distinctDoors = doors
-                .GroupBy(d => d.Id.Value)
-                .Select(g => g.First())
-                .OrderBy(d => d.Id.Value)
-                .ToList();
+            (List<string> onBoundary, int hostedTotal) =
+                FindDoorsOnBoundary(document, curvesByBoundaryElement, doorsByHost);
 
             return new CircuitInfo(
                 index,
@@ -241,27 +247,50 @@ public static class PlanCircuitProbe
                 room.Area,
                 room.Perimeter,
                 loopInfos,
-                distinctDoors.Count,
-                distinctDoors.Select(d => $"id {d.Id.Value} host {d.Host?.Id.Value}").ToList(),
+                onBoundary,
+                hostedTotal,
                 null);
         }
         catch (Exception exception)
         {
             // One awkward circuit must not cost the whole probe. Recording the
-            // failure keeps it visible instead of leaving a silent hole in the
-            // results.
+            // failure keeps it visible rather than leaving a silent hole.
             return Failed(index, circuit, wasRoomLocated, $"{exception.GetType().Name}: {exception.Message}");
         }
     }
 
+    /// <summary>
+    /// Finds the room already occupying a circuit.
+    ///
+    /// The circuit's own interior point is used as the probe. It arrives as a
+    /// UV, a location on the plan rather than in space, so it is lifted to the
+    /// level's elevation and raised slightly: a point exactly on the floor sits
+    /// on the room's lower boundary, where containment is ambiguous.
+    /// </summary>
+    private static Room? FindExistingRoom(PlanCircuit circuit, AnalysisContext context, List<Room> rooms)
+    {
+        UV point = circuit.GetPointInside();
+        var probe = new XYZ(point.U, point.V, context.Level.Elevation + 1.0);
+
+        foreach (Room room in rooms)
+        {
+            if (room.IsPointInRoom(probe))
+            {
+                return room;
+            }
+        }
+
+        return null;
+    }
+
     private static CircuitInfo Failed(int index, PlanCircuit circuit, bool wasRoomLocated, string failure) =>
         new(index, circuit.Area, circuit.SideNum, wasRoomLocated, false, "(none)", 0, 0,
-            new List<LoopInfo>(), 0, new List<string>(), failure);
+            new List<LoopInfo>(), new List<string>(), 0, failure);
 
     private static LoopInfo DescribeLoop(
         Document document,
         IList<BoundarySegment> loop,
-        HashSet<long> boundaryElementIds)
+        Dictionary<long, List<Curve>> curvesByBoundaryElement)
     {
         var segments = new List<SegmentInfo>();
         var curves = new List<Curve>();
@@ -273,21 +302,28 @@ public static class PlanCircuitProbe
 
             // A boundary produced by a linked model reports the link instance
             // in ElementId and the element inside the link in LinkElementId.
-            // Recording which of the two is present keeps a link instance from
-            // being mistaken for the wall that actually bounds the space.
+            // Recording which is present keeps a link instance from being
+            // mistaken for the wall that actually bounds the space.
             bool fromLink = segment.LinkElementId != ElementId.InvalidElementId;
             long elementId = segment.ElementId.Value;
 
             string categoryName = "(none)";
-            if (!fromLink && elementId != ElementId.InvalidElementId.Value)
+            if (fromLink)
+            {
+                categoryName = "(linked)";
+            }
+            else if (elementId != ElementId.InvalidElementId.Value)
             {
                 Element? element = document.GetElement(segment.ElementId);
                 categoryName = element?.Category?.Name ?? "(no category)";
-                boundaryElementIds.Add(elementId);
-            }
-            else if (fromLink)
-            {
-                categoryName = "(linked)";
+
+                if (!curvesByBoundaryElement.TryGetValue(elementId, out List<Curve>? list))
+                {
+                    list = new List<Curve>();
+                    curvesByBoundaryElement[elementId] = list;
+                }
+
+                list.Add(curve);
             }
 
             segments.Add(new SegmentInfo(
@@ -304,11 +340,71 @@ public static class PlanCircuitProbe
     }
 
     /// <summary>
-    /// Measures whether a loop actually closes, and by how much it misses.
+    /// Decides which doors actually open onto this space.
     ///
-    /// The gap is reported rather than corrected. A discontinuity here is
-    /// evidence about the model and has to be understood; quietly joining the
-    /// ends would manufacture an enclosure that the building does not have.
+    /// Asking only whether a bounding wall hosts a door is far too generous: a
+    /// long wall hosting six doors lends all six to every space it touches, so
+    /// a four square metre cupboard came back with eight doors. The test here
+    /// is geometric instead. A door is counted when its own location projects
+    /// onto a boundary curve produced by its own host wall, within an allowance
+    /// taken from that wall's measured thickness rather than a chosen number:
+    /// the boundary runs along the finish face while the door sits on the wall's
+    /// centre line, so the two are apart by about half the wall's width.
+    /// </summary>
+    private static (List<string> OnBoundary, int HostedTotal) FindDoorsOnBoundary(
+        Document document,
+        Dictionary<long, List<Curve>> curvesByBoundaryElement,
+        Dictionary<long, List<FamilyInstance>> doorsByHost)
+    {
+        var onBoundary = new List<string>();
+        int hostedTotal = 0;
+
+        foreach ((long boundaryElementId, List<Curve> curves) in curvesByBoundaryElement)
+        {
+            if (!doorsByHost.TryGetValue(boundaryElementId, out List<FamilyInstance>? hosted))
+            {
+                continue;
+            }
+
+            hostedTotal += hosted.Count;
+
+            double allowance = document.GetElement(new ElementId(boundaryElementId)) is Wall wall
+                ? wall.Width
+                : 1.0;
+
+            foreach (FamilyInstance door in hosted)
+            {
+                if (door.Location is not LocationPoint location)
+                {
+                    continue;
+                }
+
+                foreach (Curve curve in curves)
+                {
+                    // Compare in plan. The boundary curve lies at the room's
+                    // computation height and the door's location at its own,
+                    // and that vertical difference is not evidence of anything.
+                    XYZ curveStart = curve.GetEndPoint(0);
+                    var flattened = new XYZ(location.Point.X, location.Point.Y, curveStart.Z);
+
+                    IntersectionResult? projection = curve.Project(flattened);
+                    if (projection is not null && projection.Distance <= allowance)
+                    {
+                        onBoundary.Add($"id {door.Id.Value} host {boundaryElementId} at {projection.Distance:0.###} ft");
+                        break;
+                    }
+                }
+            }
+        }
+
+        return (onBoundary.OrderBy(d => d, StringComparer.Ordinal).ToList(), hostedTotal);
+    }
+
+    /// <summary>
+    /// Measures whether a loop closes, and by how much it misses.
+    ///
+    /// The gap is reported, never corrected. A discontinuity is evidence about
+    /// the model and has to be understood on its own terms.
     /// </summary>
     private static (bool Closed, double LargestGap) MeasureClosure(List<Curve> curves)
     {
@@ -335,13 +431,13 @@ public static class PlanCircuitProbe
         report.Item("  succeeded", circuits.Count(c => c.Failure is null));
         report.Item("  failed", circuits.Count(c => c.Failure is not null));
         report.Blank();
-        report.Item("Originally room located", circuits.Count(c => c.WasRoomLocated));
-        report.Item("Originally unroomed", circuits.Count(c => !c.WasRoomLocated));
+        report.Item("Read through an existing room", circuits.Count(c => c.Failure is null && !c.RoomWasTemporary));
+        report.Item("Read through a temporary room", circuits.Count(c => c.RoomWasTemporary));
         report.Blank();
 
         List<CircuitInfo> ok = circuits.Where(c => c.Failure is null).ToList();
-        report.Item("With at least one door", ok.Count(c => c.DoorCount > 0));
-        report.Item("With no door", ok.Count(c => c.DoorCount == 0));
+        report.Item("With at least one door on boundary", ok.Count(c => c.DoorsOnBoundary.Count > 0));
+        report.Item("With no door on boundary", ok.Count(c => c.DoorsOnBoundary.Count == 0));
         report.Blank();
         report.Item("Single boundary loop", ok.Count(c => c.Loops.Count == 1));
         report.Item("Multiple boundary loops", ok.Count(c => c.Loops.Count > 1));
@@ -349,10 +445,6 @@ public static class PlanCircuitProbe
         report.Blank();
         report.Item("All loops closed", ok.Count(c => c.Loops.Count > 0 && c.Loops.All(l => l.IsClosed)));
         report.Item("Some loop open", ok.Count(c => c.Loops.Any(l => !l.IsClosed)));
-        report.Blank();
-        report.Line("  A circuit with no door cannot be an enclosed space a person enters,");
-        report.Line("  which is the entrance rule the brief states. Whether that alone");
-        report.Line("  separates real spaces from artefacts is what these numbers show.");
     }
 
     private static void WriteCircuits(DiagnosticReport report, List<CircuitInfo> circuits)
@@ -364,7 +456,7 @@ public static class PlanCircuitProbe
             double circuitM2 = UnitUtils.ConvertFromInternalUnits(circuit.CircuitAreaFeet2, UnitTypeId.SquareMeters);
             report.Blank();
             report.Line($"[{circuit.Index}]  circuit area {circuitM2:0.##} m2   sides {circuit.SideNum}   " +
-                        $"originally {(circuit.WasRoomLocated ? "roomed" : "UNROOMED")}");
+                        $"{(circuit.WasRoomLocated ? "roomed" : "UNROOMED")}");
 
             if (circuit.Failure is not null)
             {
@@ -373,13 +465,18 @@ public static class PlanCircuitProbe
             }
 
             double roomM2 = UnitUtils.ConvertFromInternalUnits(circuit.RoomAreaFeet2, UnitTypeId.SquareMeters);
-            report.Line($"      room {circuit.RoomLabel}   area {roomM2:0.##} m2   perimeter {circuit.PerimeterFeet:0.##} ft");
-            report.Line($"      loops {circuit.Loops.Count}   doors {circuit.DoorCount}");
+            string source = circuit.RoomWasTemporary ? "temporary room" : "existing room";
+            report.Line($"      {source}: {circuit.RoomLabel}   area {roomM2:0.##} m2   perimeter {circuit.PerimeterFeet:0.##} ft");
+            report.Line($"      loops {circuit.Loops.Count}   doors on boundary {circuit.DoorsOnBoundary.Count}" +
+                        $"   (hosted by bounding walls: {circuit.DoorsHostedByBoundaryWalls})");
 
             for (int i = 0; i < circuit.Loops.Count; i++)
             {
                 LoopInfo loop = circuit.Loops[i];
-                string closure = loop.IsClosed ? "closed" : $"OPEN by {loop.LargestGapFeet:0.####} ft";
+                string closure = loop.IsClosed
+                    ? "closed"
+                    : $"OPEN by {loop.LargestGapFeet:0.00000000} ft " +
+                      $"({UnitUtils.ConvertFromInternalUnits(loop.LargestGapFeet, UnitTypeId.Millimeters):0.0000} mm)";
                 report.Line($"        loop {i}: {loop.SegmentCount} segments, {closure}");
 
                 var categories = loop.Segments
@@ -395,7 +492,7 @@ public static class PlanCircuitProbe
                 report.Line($"          curve types: {string.Join(", ", curveTypes)}");
             }
 
-            foreach (string door in circuit.DoorDescriptions)
+            foreach (string door in circuit.DoorsOnBoundary)
             {
                 report.Line($"        door {door}");
             }
@@ -418,5 +515,38 @@ public static class PlanCircuitProbe
         report.Line("  rather than a list decided in advance.");
         report.Blank();
         report.Census(census);
+    }
+
+    /// <summary>
+    /// Lists the boundary segments no element accounts for.
+    ///
+    /// These are recorded rather than quietly dropped. A boundary with no
+    /// generating element cannot be reported in the export, and until it is
+    /// understood it is not safe to assume it is harmless.
+    /// </summary>
+    private static void WriteUnattributedSegments(DiagnosticReport report, List<CircuitInfo> circuits)
+    {
+        report.Section("BOUNDARY SEGMENTS WITH NO GENERATING ELEMENT");
+
+        var rows = new List<string>();
+        foreach (CircuitInfo circuit in circuits)
+        {
+            for (int i = 0; i < circuit.Loops.Count; i++)
+            {
+                foreach (SegmentInfo segment in circuit.Loops[i].Segments.Where(s => s.CategoryName == "(none)"))
+                {
+                    double millimetres = UnitUtils.ConvertFromInternalUnits(segment.LengthFeet, UnitTypeId.Millimeters);
+                    rows.Add($"  circuit {circuit.Index,-4} loop {i}   {segment.CurveType,-6} " +
+                             $"length {segment.LengthFeet,8:0.###} ft ({millimetres:0.#} mm)   elementId {segment.ElementId}");
+                }
+            }
+        }
+
+        report.Item("Count", rows.Count);
+        report.Blank();
+        foreach (string row in rows)
+        {
+            report.Line(row);
+        }
     }
 }
