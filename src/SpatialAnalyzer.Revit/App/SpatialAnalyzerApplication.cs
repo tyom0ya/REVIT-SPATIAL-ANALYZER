@@ -1,5 +1,6 @@
 using System.Reflection;
 using Autodesk.Revit.UI;
+using SpatialAnalyzer.Revit.Commands;
 
 namespace SpatialAnalyzer.Revit.App;
 
@@ -20,7 +21,8 @@ public class SpatialAnalyzerApplication : IExternalApplication
         try
         {
             RibbonPanel panel = CreatePanel(application);
-            AddHelloButton(panel);
+            AddPreflightButton(panel);
+            AddInspectElementButton(panel);
         }
         catch (Exception exception)
         {
@@ -62,21 +64,44 @@ public class SpatialAnalyzerApplication : IExternalApplication
         return application.CreateRibbonPanel(TabName, PanelName);
     }
 
-    private static void AddHelloButton(RibbonPanel panel)
+    private static void AddPreflightButton(RibbonPanel panel)
     {
         // A ribbon button locates its command by assembly path and class name,
         // so the command needs no separate registration in the .addin manifest.
+        //
+        // The class name comes from typeof rather than a string literal. Revit
+        // resolves it by reflection at click time, so a literal would survive a
+        // rename or a namespace move and fail only when a user pressed the
+        // button. This way the compiler enforces it.
         string assemblyPath = Assembly.GetExecutingAssembly().Location;
 
         var buttonData = new PushButtonData(
-            name: "SpatialAnalyzerHello",
-            text: "Hello",
+            name: "SpatialAnalyzerPreflight",
+            text: "Preflight",
             assemblyName: assemblyPath,
-            className: "SpatialAnalyzer.Revit.Commands.HelloCommand")
+            className: typeof(PreflightCommand).FullName)
         {
-            ToolTip = "Reports Revit version and active document context.",
-            LongDescription = "Bootstrap command confirming the Spatial Analyzer add-in is loaded. "
-                            + "It performs no analysis and modifies nothing.",
+            ToolTip = "Checks whether the current view, level and phase can support a spatial analysis.",
+            LongDescription = "Reports the document, plan view, level and phase the analysis would run in, "
+                            + "or explains why the current state cannot support one. Reads only; changes nothing.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddInspectElementButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerInspectElement",
+            text: "Inspect Element",
+            assemblyName: assemblyPath,
+            className: typeof(InspectElementCommand).FullName)
+        {
+            ToolTip = "Pick one element and report its category, family, type and id.",
+            LongDescription = "Shows how the analysis identifies a selected element. Walls cannot be picked. "
+                            + "Reads only; changes nothing.",
         };
 
         panel.AddItem(buttonData);
