@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Revit add-in manifest template.
+
+  This is a template, not a usable manifest: {ASSEMBLY_PATH} is substituted by
+  tools/deploy-dev.ps1 (and later by the installer) with the absolute path to
+  the deployed SpatialAnalyzer.Revit.dll. The path is machine specific, which is
+  exactly why it is not committed.
+
+  AddInId is a permanent identity for this add-in. Revit uses it to distinguish
+  registrations, so it is generated once and must never change - a new GUID
+  would look like a different add-in to Revit and to anything that has already
+  recorded it.
+
+  FullClassName must match a public, non-abstract type with a parameterless
+  constructor that implements IExternalCommand. It compiles perfectly when
+  wrong and fails only at load time, so tools/verify.ps1 checks it against the
+  built assembly rather than trusting it.
+-->
+<RevitAddIns>
+  <AddIn Type="Command">
+    <Name>Spatial Analyzer Hello</Name>
+    <Assembly>{ASSEMBLY_PATH}</Assembly>
+    <AddInId>f2068912-e7cb-4051-9956-1dedb39e8788</AddInId>
+    <FullClassName>SpatialAnalyzer.Revit.Commands.HelloCommand</FullClassName>
+    <Text>Spatial Analyzer Hello</Text>
+    <Description>Reports Revit version and active document context, confirming the add-in loaded.</Description>
+    <VendorId>APLS</VendorId>
+    <VendorDescription>Aplos</VendorDescription>
+  </AddIn>
+</RevitAddIns>
