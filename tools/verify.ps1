@@ -213,6 +213,19 @@ if (-not $SkipBuild) {
     $buildResult = Invoke-Native -FilePath 'powershell' -Arguments (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File') + $buildArgs)
     Add-Result "Solution builds" ($buildResult.ExitCode -eq 0) "run tools\build.ps1 directly to see the compiler output"
 
+    # TreatWarningsAsErrors covers the compiler, but not MSBuild's own warnings
+    # - MSB3277 reference conflicts being the one this project actually hit.
+    # Asserting a clean build keeps that fixed at the source rather than
+    # someone quietly reintroducing a suppression.
+    $warningLine = @($buildResult.Lines | Where-Object { $_ -match '\d+\s+Warning\(s\)' }) | Select-Object -Last 1
+    if ($null -eq $warningLine) {
+        Add-Result "Build produces no warnings" $false "could not read a warning count from the build output"
+    }
+    else {
+        $warningCount = [int] ([regex]::Match($warningLine, '(\d+)\s+Warning').Groups[1].Value)
+        Add-Result "Build produces no warnings" ($warningCount -eq 0) "build reported $warningCount warning(s)"
+    }
+
     $solution = Join-Path $repoRoot 'SpatialAnalyzer.sln'
     $testArgs = @('test', $solution, '-c', $Configuration, '--nologo', '--no-build')
     if ($RevitApiDir) { $testArgs += "-p:RevitApiDir=$RevitApiDir" }

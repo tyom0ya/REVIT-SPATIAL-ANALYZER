@@ -8,12 +8,23 @@ findings as JSON.
 
 ## Status
 
-Early development. The foundation phase is complete: the solution builds, the
-test harness runs, and the Revit 2025 API is referenced correctly.
+Early development. The add-in loads into Revit 2025 and registers a **Spatial
+Analyzer** ribbon tab, verified by running it. No spatial analysis is
+implemented yet: the current command reports host and document context only.
 
-**The add-in does not load into Revit yet.** There is no `.addin` manifest and no
-external command; those arrive in the next phase. Nothing in this repository
-should be read as evidence of Revit runtime behaviour.
+## Deploying for development
+
+```powershell
+.\tools\deploy-dev.ps1
+```
+
+Builds, verifies, copies our assemblies to `%LOCALAPPDATA%\RevitSpatialAnalyzer`
+and writes the manifest to the per-user Revit 2025 Addins folder. No
+administrator rights are needed and no Autodesk assembly is ever copied.
+
+Revit must be closed when deploying — it locks loaded assemblies — and must be
+restarted afterwards, because manifests are read only at startup. On first load
+Revit will ask about an unsigned add-in; choose **Always Load**.
 
 ## Requirements
 
@@ -73,8 +84,15 @@ expensive to discover late:
 - the Revit project resolves exactly `RevitAPI.dll` and `RevitAPIUI.dll`, both
   with Copy Local = false
 - no Revit API assembly reaches build output or `deps.json`
+- the build produces zero warnings
 - no build output, Revit model, or key file is tracked by git
 - no whitespace errors and no UTF-8 BOMs in C# sources
+
+The test run additionally checks that every entry point named in the `.addin`
+manifest exists in the built assembly as a public, concrete, default
+constructible type implementing the right interface. Revit resolves those names
+by reflection at startup, so a mistake there compiles and deploys perfectly and
+fails only on the next Revit restart.
 
 Exits non-zero if any check fails, so it works as a CI gate as well as a
 pre-commit habit.
@@ -91,12 +109,20 @@ src/
   SpatialAnalyzer.Revit/       Autodesk adapter layer
 
 tests/
-  SpatialAnalyzer.Core.Tests/  unit tests, no Revit required
+  SpatialAnalyzer.Core.Tests/  domain and algorithm tests
+  SpatialAnalyzer.Revit.Tests/ manifest-to-assembly contract tests
+
+manifests/
+  SpatialAnalyzer.addin.template   manifest source; the assembly path is
+                                   substituted at deployment time
 
 tools/
   build.ps1                    build entry point
   verify.ps1                   build + tests + repository checks
+  deploy-dev.ps1               per-user development deployment
 ```
+
+Neither test project requires Revit to be running.
 
 Directories are created when the functionality needs them rather than up front.
 

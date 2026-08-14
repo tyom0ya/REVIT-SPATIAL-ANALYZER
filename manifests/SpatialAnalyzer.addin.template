@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Revit add-in manifest template.
+
+  This is a template, not a usable manifest: the placeholder below is replaced
+  by tools/deploy-dev.ps1 (and later by the installer) with the absolute path
+  to the deployed SpatialAnalyzer.Revit.dll. That path is machine specific,
+  which is exactly why it is not committed. These comments are stripped during
+  generation and do not reach the deployed manifest.
+
+  Each AddInId is a permanent identity. Revit uses it to distinguish
+  registrations, so they are generated once and must never change - a new GUID
+  would look like a different add-in to Revit and to anything that has already
+  recorded it. The application and the command have separate ids.
+
+  Only the application is registered. A ribbon button locates its command by
+  assembly path and class name, so HelloCommand needs no Command entry here;
+  registering one as well would list it under Add-Ins > External Tools in
+  addition to the ribbon, which is not the interface this project is aiming
+  for.
+
+  FullClassName must match a public, non-abstract type with a parameterless
+  constructor implementing the relevant interface. It compiles perfectly when
+  wrong and fails only at load time, so it is checked against the built
+  assembly rather than trusted.
+-->
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Spatial Analyzer</Name>
+    <Assembly>{ASSEMBLY_PATH}</Assembly>
+    <AddInId>ae3179c9-a201-47b5-9ed7-65fc2a0f8b28</AddInId>
+    <FullClassName>SpatialAnalyzer.Revit.App.SpatialAnalyzerApplication</FullClassName>
+    <VendorId>APLS</VendorId>
+    <VendorDescription>Aplos</VendorDescription>
+  </AddIn>
+</RevitAddIns>
