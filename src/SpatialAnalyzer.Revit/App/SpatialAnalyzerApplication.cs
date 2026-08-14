@@ -22,6 +22,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
         {
             RibbonPanel panel = CreatePanel(application);
             AddPreflightButton(panel);
+            AddInspectElementButton(panel);
         }
         catch (Exception exception)
         {
@@ -83,6 +84,24 @@ public class SpatialAnalyzerApplication : IExternalApplication
             ToolTip = "Checks whether the current view, level and phase can support a spatial analysis.",
             LongDescription = "Reports the document, plan view, level and phase the analysis would run in, "
                             + "or explains why the current state cannot support one. Reads only; changes nothing.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddInspectElementButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerInspectElement",
+            text: "Inspect Element",
+            assemblyName: assemblyPath,
+            className: typeof(InspectElementCommand).FullName)
+        {
+            ToolTip = "Pick one element and report its category, family, type and id.",
+            LongDescription = "Shows how the analysis identifies a selected element. Walls cannot be picked. "
+                            + "Reads only; changes nothing.",
         };
 
         panel.AddItem(buttonData);
