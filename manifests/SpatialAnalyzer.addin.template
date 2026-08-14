@@ -2,29 +2,34 @@
 <!--
   Revit add-in manifest template.
 
-  This is a template, not a usable manifest: {ASSEMBLY_PATH} is substituted by
-  tools/deploy-dev.ps1 (and later by the installer) with the absolute path to
-  the deployed SpatialAnalyzer.Revit.dll. The path is machine specific, which is
-  exactly why it is not committed.
+  This is a template, not a usable manifest: the placeholder below is replaced
+  by tools/deploy-dev.ps1 (and later by the installer) with the absolute path
+  to the deployed SpatialAnalyzer.Revit.dll. That path is machine specific,
+  which is exactly why it is not committed. These comments are stripped during
+  generation and do not reach the deployed manifest.
 
-  AddInId is a permanent identity for this add-in. Revit uses it to distinguish
-  registrations, so it is generated once and must never change - a new GUID
+  Each AddInId is a permanent identity. Revit uses it to distinguish
+  registrations, so they are generated once and must never change - a new GUID
   would look like a different add-in to Revit and to anything that has already
-  recorded it.
+  recorded it. The application and the command have separate ids.
+
+  Only the application is registered. A ribbon button locates its command by
+  assembly path and class name, so HelloCommand needs no Command entry here;
+  registering one as well would list it under Add-Ins > External Tools in
+  addition to the ribbon, which is not the interface this project is aiming
+  for.
 
   FullClassName must match a public, non-abstract type with a parameterless
-  constructor that implements IExternalCommand. It compiles perfectly when
-  wrong and fails only at load time, so tools/verify.ps1 checks it against the
-  built assembly rather than trusting it.
+  constructor implementing the relevant interface. It compiles perfectly when
+  wrong and fails only at load time, so it is checked against the built
+  assembly rather than trusted.
 -->
 <RevitAddIns>
-  <AddIn Type="Command">
-    <Name>Spatial Analyzer Hello</Name>
+  <AddIn Type="Application">
+    <Name>Spatial Analyzer</Name>
     <Assembly>{ASSEMBLY_PATH}</Assembly>
-    <AddInId>f2068912-e7cb-4051-9956-1dedb39e8788</AddInId>
-    <FullClassName>SpatialAnalyzer.Revit.Commands.HelloCommand</FullClassName>
-    <Text>Spatial Analyzer Hello</Text>
-    <Description>Reports Revit version and active document context, confirming the add-in loaded.</Description>
+    <AddInId>ae3179c9-a201-47b5-9ed7-65fc2a0f8b28</AddInId>
+    <FullClassName>SpatialAnalyzer.Revit.App.SpatialAnalyzerApplication</FullClassName>
     <VendorId>APLS</VendorId>
     <VendorDescription>Aplos</VendorDescription>
   </AddIn>

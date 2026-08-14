@@ -182,20 +182,35 @@ catch {
     Stop-WithFailure "Deployed manifest is not well-formed XML: $_"
 }
 
-$declaredAssembly = $parsed.RevitAddIns.AddIn.Assembly
-if (-not (Test-Path $declaredAssembly)) {
-    Stop-WithFailure "Manifest points at an assembly that does not exist: $declaredAssembly"
+# A manifest may register several entries (an application, one or more
+# commands). Wrapping in @() keeps this correct for a single entry, where the
+# XML adapter would otherwise hand back a bare node rather than a collection.
+$entries = @($parsed.RevitAddIns.AddIn)
+if ($entries.Count -eq 0) {
+    Stop-WithFailure "Deployed manifest declares no AddIn entries."
+}
+
+foreach ($entry in $entries) {
+    if (-not (Test-Path $entry.Assembly)) {
+        Stop-WithFailure "Manifest entry '$($entry.Name)' points at an assembly that does not exist: $($entry.Assembly)"
+    }
+    if (-not $entry.FullClassName) {
+        Stop-WithFailure "Manifest entry '$($entry.Name)' has no FullClassName."
+    }
 }
 
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "DEPLOY OK" -ForegroundColor Green
 Write-Host ""
-Write-Host "  manifest    : $manifestPath"
-Write-Host "  assembly    : $declaredAssembly"
-Write-Host "  class       : $($parsed.RevitAddIns.AddIn.FullClassName)"
-Write-Host "  add-in id   : $($parsed.RevitAddIns.AddIn.AddInId)"
+Write-Host "  manifest : $manifestPath"
+foreach ($entry in $entries) {
+    Write-Host ""
+    Write-Host "  [$($entry.Type)] $($entry.Name)"
+    Write-Host "    assembly : $($entry.Assembly)"
+    Write-Host "    class    : $($entry.FullClassName)"
+    Write-Host "    id       : $($entry.AddInId)"
+}
 Write-Host ""
-Write-Host "  Start Revit $revitVersion and run the command from" -ForegroundColor Yellow
-Write-Host "  Add-Ins > External Tools > $($parsed.RevitAddIns.AddIn.Text)" -ForegroundColor Yellow
+Write-Host "  Restart Revit $revitVersion for the manifest to be read." -ForegroundColor Yellow
 exit 0
