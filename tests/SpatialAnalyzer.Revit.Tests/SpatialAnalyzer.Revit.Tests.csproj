@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tests for the Revit adapter layer that still do not need Revit to run.
+
+    These check the contract between the .addin manifest and the built
+    assembly. Revit resolves FullClassName by reflection at load time, so a
+    wrong namespace or a non-public class compiles, deploys and passes every
+    other check, then fails only when someone restarts Revit. That is a
+    different failure class from compilation and deserves its own test.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>SpatialAnalyzer.Revit.Tests</AssemblyName>
+    <RootNamespace>SpatialAnalyzer.Revit.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+
+    <!--
+      Reads assemblies as metadata rather than loading them for execution.
+
+      Justification for a third-party package, per the project's dependency
+      policy: this is test-only and never reaches the add-in. Ordinary
+      Assembly.LoadFrom would execute module initialisers and demand that every
+      Revit dependency be resolvable in the test process; MetadataLoadContext
+      inspects metadata without running anything, which is exactly what
+      checking a manifest contract requires.
+    -->
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="8.0.0" />
+  </ItemGroup>
+
+  <!--
+    Build ordering only. ReferenceOutputAssembly=false keeps this from becoming
+    a compile-time reference, which would drag the Revit API into this project
+    merely to satisfy the public signatures of the types under inspection.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SpatialAnalyzer.Revit\SpatialAnalyzer.Revit.csproj"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!--
+    Surfaces the Revit installation directory to the tests so that a build with
+    -p:RevitApiDir=... is honoured here too instead of being hardcoded.
+  -->
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>RevitApiDir</_Parameter1>
+      <_Parameter2>$(RevitApiDir)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>RevitAssemblyPath</_Parameter1>
+      <_Parameter2>$(MSBuildThisFileDirectory)..\..\src\SpatialAnalyzer.Revit\bin\$(Configuration)\net8.0-windows\SpatialAnalyzer.Revit.dll</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>ManifestTemplatePath</_Parameter1>
+      <_Parameter2>$(MSBuildThisFileDirectory)..\..\manifests\SpatialAnalyzer.addin.template</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>
