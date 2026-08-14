@@ -14,32 +14,29 @@
   </PropertyGroup>
 
   <!--
-    MSB3277 is suppressed here, and only here.
+    Resolves the MSB3277 reference conflict at its source.
 
-    Revit's installation directory contains its own copies of several framework
-    assemblies (WindowsBase, System.Drawing, Microsoft.VisualBasic) alongside
-    RevitAPIUI.dll. Because our HintPath points into that directory, MSBuild
-    finds those copies while chasing RevitAPIUI's dependencies and reports a
-    version conflict — roughly 1300 lines of it per build.
+    RevitAPIUI.dll depends on WindowsBase, System.Drawing and
+    Microsoft.VisualBasic. Those live in the Windows Desktop framework, not in
+    the base .NET runtime, and Revit keeps its own copies beside RevitAPIUI.dll.
+    A net8.0-windows project without this reference has no Windows Desktop
+    assemblies to resolve against, so MSBuild finds Revit's copies while
+    chasing those dependencies and reports a version conflict against the base
+    reference pack — roughly 1300 lines of warning per build.
 
-    This was investigated rather than silenced on sight. Inspecting the resolved
-    reference set showed MSBuild already picks the correct assemblies:
+    Declaring the Windows Desktop framework gives those dependencies a proper
+    home and the conflict disappears rather than being hidden: the build is
+    clean with no warning suppression anywhere in this project, so a genuinely
+    new MSB3277 would still be visible.
 
-      * WindowsBase, System.Drawing and Microsoft.VisualBasic all resolve from
-        C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\8.0.30, i.e. the
-        .NET 8 reference pack, not from Revit.
-      * Exactly two references resolve out of the Revit directory, RevitAPI.dll
-        and RevitAPIUI.dll, both with Private=false.
-
-    So the conflict is reported and then correctly resolved, and the warning is
-    noise that would bury genuine warnings. Suppression is scoped to this
-    project so Core and the tests still surface MSB3277 if it ever appears
-    there. tools/verify.ps1 asserts the resolved reference set positively, which
-    is a stronger check than the warning it replaces.
+    This is the fix Autodesk documents for the .NET 8 migration ("add a
+    reference to the Windows Desktop framework"). Note that it is not the same
+    as <UseWPF>, which additionally turns on XAML compilation and a WPF
+    application model; this project builds no WPF UI.
   -->
-  <PropertyGroup>
-    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
-  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
+  </ItemGroup>
 
   <!--
     Revit API assemblies.
