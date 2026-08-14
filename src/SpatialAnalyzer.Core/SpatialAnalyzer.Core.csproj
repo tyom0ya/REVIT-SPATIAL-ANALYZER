@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Plain .NET domain and algorithm library.
+
+    This project targets net8.0 rather than net8.0-windows on purpose: it makes
+    the layering rule structural instead of a convention. Core must never
+    reference RevitAPI.dll, RevitAPIUI.dll or any Autodesk.Revit.* type, so that
+    spatial logic can be unit tested without launching Revit.
+
+    Revit data is copied into plain owned types by SpatialAnalyzer.Revit before
+    it reaches this assembly.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>SpatialAnalyzer.Core</AssemblyName>
+    <RootNamespace>SpatialAnalyzer.Core</RootNamespace>
+  </PropertyGroup>
+
+</Project>
