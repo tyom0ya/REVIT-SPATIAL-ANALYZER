@@ -1,0 +1,35 @@
+# Normalize text files to LF inside the repository and check them out with
+# native line endings. Combined with core.autocrlf=true on Windows this keeps
+# `git diff --check` clean, which tools/verify.ps1 relies on.
+* text=auto
+
+# Source and project files
+*.cs      text diff=csharp
+*.csproj  text
+*.props   text
+*.targets text
+*.sln     text eol=crlf
+*.addin   text
+*.xml     text
+*.json    text
+*.md      text
+
+# Scripts keep CRLF so they behave predictably under Windows PowerShell
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.iss text eol=crlf
+
+# Binary — never normalize, never diff
+*.rvt binary
+*.rfa binary
+*.rte binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary

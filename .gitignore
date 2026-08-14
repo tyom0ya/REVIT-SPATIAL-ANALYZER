@@ -1,0 +1,118 @@
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+artifacts/
+
+# ---------------------------------------------------------------------------
+# IDE / editor
+# ---------------------------------------------------------------------------
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# ---------------------------------------------------------------------------
+# NuGet
+# ---------------------------------------------------------------------------
+packages/
+*.nupkg
+*.snupkg
+
+# ---------------------------------------------------------------------------
+# Test output
+# ---------------------------------------------------------------------------
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coverlet.json
+coverage*.xml
+coverage*.json
+
+# ---------------------------------------------------------------------------
+# Revit models and family files.
+# Snowdon and every other .rvt lives OUTSIDE this repository.
+# ---------------------------------------------------------------------------
+*.rvt
+*.rfa
+*.rte
+*.rft
+*.rvt.*
+*.slog
+*.dwg
+*.ifc
+
+# ---------------------------------------------------------------------------
+# Revit API assemblies.
+# These are referenced from the local Revit 2025 install with Copy Local =
+# false. If one ever appears in the working tree it is a packaging defect,
+# not an asset. tools/verify.ps1 enforces the same rule against build output.
+# ---------------------------------------------------------------------------
+RevitAPI*.dll
+RevitAPIUI*.dll
+AdWindows.dll
+UIFramework*.dll
+
+# ---------------------------------------------------------------------------
+# Revit journals and local Revit noise
+# ---------------------------------------------------------------------------
+[Jj]ournal*.txt
+*.rvt_backup/
+
+# ---------------------------------------------------------------------------
+# AI operating environment.
+# This repository is the application only. Claude configuration, skills,
+# agents, hooks, prompts, research output, transcripts, scratchpads and
+# memory all live outside it, under the workspace root.
+# ---------------------------------------------------------------------------
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.cursor/
+.aider*
+.github/copilot-instructions.md
+research/
+transcripts/
+
+# ---------------------------------------------------------------------------
+# Logs, diagnostics and scratch export output.
+# Runtime diagnostics and JSON exports are written to LocalAppData, not here.
+# Curated sample JSON under samples/ is intentionally NOT ignored.
+# ---------------------------------------------------------------------------
+*.log
+*.tmp
+*.tmp.json
+diagnostics/
+
+# ---------------------------------------------------------------------------
+# Installer output
+# ---------------------------------------------------------------------------
+installer/[Oo]utput/
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+*.pfx
+*.snk
+appsettings.*.local.json
+.env
+.env.*
+
+# ---------------------------------------------------------------------------
+# OS / sync artifacts
+# ---------------------------------------------------------------------------
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
