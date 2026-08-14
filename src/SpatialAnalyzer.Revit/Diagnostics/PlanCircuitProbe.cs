@@ -52,6 +52,13 @@ public static class PlanCircuitProbe
         double LargestGapFeet,
         List<SegmentInfo> Segments);
 
+    private sealed record BoundaryElementInfo(
+        long ElementId,
+        string CategoryName,
+        string TypeName,
+        string WallKind,
+        List<string> Inserts);
+
     private sealed record CircuitInfo(
         int Index,
         double CircuitAreaFeet2,
@@ -64,6 +71,7 @@ public static class PlanCircuitProbe
         List<LoopInfo> Loops,
         List<string> DoorsOnBoundary,
         int DoorsHostedByBoundaryWalls,
+        List<BoundaryElementInfo> BoundaryElements,
         string? Failure);
 
     public static DiagnosticReport Probe(AnalysisContext context)
@@ -112,6 +120,7 @@ public static class PlanCircuitProbe
         report.Item("Model unchanged", clean ? "yes" : "NO - INVESTIGATE");
 
         WriteSummary(report, circuits);
+        WriteEntranceInvestigation(report, circuits);
         WriteCircuits(report, circuits);
         WriteBoundaryCategoryCensus(report, circuits);
         WriteUnattributedSegments(report, circuits);
@@ -237,6 +246,9 @@ public static class PlanCircuitProbe
             (List<string> onBoundary, int hostedTotal) =
                 FindDoorsOnBoundary(document, curvesByBoundaryElement, doorsByHost);
 
+            List<BoundaryElementInfo> boundaryElements =
+                DescribeBoundaryElements(document, curvesByBoundaryElement.Keys);
+
             return new CircuitInfo(
                 index,
                 circuit.Area,
@@ -249,6 +261,7 @@ public static class PlanCircuitProbe
                 loopInfos,
                 onBoundary,
                 hostedTotal,
+                boundaryElements,
                 null);
         }
         catch (Exception exception)
@@ -285,7 +298,68 @@ public static class PlanCircuitProbe
 
     private static CircuitInfo Failed(int index, PlanCircuit circuit, bool wasRoomLocated, string failure) =>
         new(index, circuit.Area, circuit.SideNum, wasRoomLocated, false, "(none)", 0, 0,
-            new List<LoopInfo>(), new List<string>(), 0, failure);
+            new List<LoopInfo>(), new List<string>(), 0, new List<BoundaryElementInfo>(), failure);
+
+    /// <summary>
+    /// Describes each element bounding a space, and everything inserted into it.
+    ///
+    /// Counting doors hosted in bounding walls answers only "is there a door".
+    /// A space with no door may still be entered - through a cased opening, a
+    /// gap, or an embedded curtain wall - and the brief's entrance rule cannot
+    /// be judged without knowing which. FindInserts is used rather than a
+    /// hand-built host map because it reports rectangular openings and embedded
+    /// walls too, neither of which appear as hosted family instances.
+    /// </summary>
+    private static List<BoundaryElementInfo> DescribeBoundaryElements(
+        Document document,
+        IEnumerable<long> boundaryElementIds)
+    {
+        var results = new List<BoundaryElementInfo>();
+
+        foreach (long id in boundaryElementIds.OrderBy(i => i))
+        {
+            Element? element = document.GetElement(new ElementId(id));
+            if (element is null)
+            {
+                continue;
+            }
+
+            string typeName = document.GetElement(element.GetTypeId()) is ElementType type
+                ? type.Name
+                : "(no type)";
+
+            string wallKind = element is Wall wall
+                ? (document.GetElement(wall.GetTypeId()) as WallType)?.Kind.ToString() ?? "(unknown)"
+                : "-";
+
+            var inserts = new List<string>();
+            if (element is HostObject host)
+            {
+                // The flags ask for rectangular openings and for embedded walls
+                // and their inserts, which is precisely what a space entered
+                // without a door is likely to be relying on.
+                foreach (ElementId insertId in host.FindInserts(true, false, true, true))
+                {
+                    Element? insert = document.GetElement(insertId);
+                    if (insert is null)
+                    {
+                        continue;
+                    }
+
+                    inserts.Add($"{insert.Category?.Name ?? "(no category)"} id {insertId.Value} \"{insert.Name}\"");
+                }
+            }
+
+            results.Add(new BoundaryElementInfo(
+                id,
+                element.Category?.Name ?? "(no category)",
+                typeName,
+                wallKind,
+                inserts.OrderBy(i => i, StringComparer.Ordinal).ToList()));
+        }
+
+        return results;
+    }
 
     private static LoopInfo DescribeLoop(
         Document document,
@@ -445,6 +519,66 @@ public static class PlanCircuitProbe
         report.Blank();
         report.Item("All loops closed", ok.Count(c => c.Loops.Count > 0 && c.Loops.All(l => l.IsClosed)));
         report.Item("Some loop open", ok.Count(c => c.Loops.Any(l => !l.IsClosed)));
+    }
+
+    /// <summary>
+    /// Examines the spaces the entrance rule would reject.
+    ///
+    /// The brief's initial rule is that a space qualifies only if it has a
+    /// door. One space this rejects is a large interior room, so the rule is
+    /// either too strict or the entrance is of a kind not yet looked for. This
+    /// section lists everything bounding those spaces and everything inserted
+    /// into it, so the answer comes from the model rather than from relaxing
+    /// the rule until the count looks right.
+    /// </summary>
+    private static void WriteEntranceInvestigation(DiagnosticReport report, List<CircuitInfo> circuits)
+    {
+        report.Section("ENTRANCE INVESTIGATION (spaces with no door on their boundary)");
+
+        List<CircuitInfo> doorless = circuits
+            .Where(c => c.Failure is null && c.DoorsOnBoundary.Count == 0)
+            .ToList();
+
+        report.Item("Spaces with no door", doorless.Count);
+        report.Line("  Everything bounding each, and everything inserted into it.");
+
+        foreach (CircuitInfo circuit in doorless)
+        {
+            double squareMetres = UnitUtils.ConvertFromInternalUnits(circuit.CircuitAreaFeet2, UnitTypeId.SquareMeters);
+            report.Blank();
+            report.Line($"[{circuit.Index}]  {squareMetres:0.##} m2   loops {circuit.Loops.Count}   " +
+                        $"bounding elements {circuit.BoundaryElements.Count}");
+
+            foreach (BoundaryElementInfo element in circuit.BoundaryElements)
+            {
+                string kind = element.WallKind == "-" ? string.Empty : $"  kind {element.WallKind}";
+                report.Line($"      {element.CategoryName,-22} id {element.ElementId,-10} \"{element.TypeName}\"{kind}");
+
+                foreach (string insert in element.Inserts)
+                {
+                    report.Line($"          insert: {insert}");
+                }
+            }
+        }
+
+        report.Blank();
+        report.Line("  Insert categories across every space with no door:");
+        var census = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (string insert in doorless.SelectMany(c => c.BoundaryElements).SelectMany(e => e.Inserts))
+        {
+            string category = insert.Split(" id ")[0];
+            census.TryGetValue(category, out long current);
+            census[category] = current + 1;
+        }
+
+        if (census.Count == 0)
+        {
+            report.Line("    none - nothing at all is inserted into any of their boundaries");
+        }
+        else
+        {
+            report.Census(census);
+        }
     }
 
     private static void WriteCircuits(DiagnosticReport report, List<CircuitInfo> circuits)
