@@ -24,6 +24,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
             AddPreflightButton(panel);
             AddInspectElementButton(panel);
             AddAuditModelButton(panel);
+            AddProbeCircuitsButton(panel);
         }
         catch (Exception exception)
         {
@@ -122,6 +123,25 @@ public class SpatialAnalyzerApplication : IExternalApplication
             LongDescription = "Records categories, existing rooms, room separation lines, links, doors and "
                             + "Revit's plan topology, so the analysis design can be checked against the "
                             + "model rather than assumed. Reads only; changes nothing.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddProbeCircuitsButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerProbeCircuits",
+            text: "Probe Circuits",
+            assemblyName: assemblyPath,
+            className: typeof(ProbeCircuitsCommand).FullName)
+        {
+            ToolTip = "Investigate whether Revit's plan circuits can serve as candidate rooms.",
+            LongDescription = "Places a temporary room in every plan circuit, reads the resulting boundaries "
+                            + "and doors, then rolls the change back. Asks before running. The model is left "
+                            + "as it was found and the report states whether that held.",
         };
 
         panel.AddItem(buttonData);

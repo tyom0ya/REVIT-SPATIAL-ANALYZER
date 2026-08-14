@@ -181,9 +181,16 @@ if ($isRepo) {
         Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
         ForEach-Object { $_.FullName.Replace($repoRoot + '\', '').Replace('\', '/') })
 
-    $untrackedSource = @($sourceOnDisk | Where-Object { $tracked -notcontains $_ })
-    Add-Result "Every source file is tracked by git" ($untrackedSource.Count -eq 0) `
-        (($untrackedSource | ForEach-Object { "$_  (run: git check-ignore -v `"$_`")" }) -join "`n")
+    # The test is whether git IGNORES a source file, not whether it is tracked.
+    # A file that has simply not been added yet is ordinary work in progress; a
+    # file git refuses to see is the defect. Conflating the two would make this
+    # check fail throughout normal development, and a check that cries wolf
+    # gets ignored precisely when it matters.
+    if ($sourceOnDisk.Count -gt 0) {
+        $ignoredSource = @((Invoke-Git (@('check-ignore') + $sourceOnDisk)).Lines | Where-Object { $_ })
+        Add-Result "No source file is excluded by ignore rules" ($ignoredSource.Count -eq 0) `
+            (($ignoredSource | ForEach-Object { "$_  (run: git check-ignore -v `"$_`")" }) -join "`n")
+    }
 
     # Whitespace errors against HEAD, covering staged and unstaged alike.
     Add-Result "No whitespace errors (git diff --check)" ((Invoke-Git @('diff', 'HEAD', '--check')).ExitCode -eq 0)
