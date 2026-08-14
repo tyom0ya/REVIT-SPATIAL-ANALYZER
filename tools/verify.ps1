@@ -169,6 +169,22 @@ if ($isRepo) {
     })
     Add-Result "No prohibited files tracked by git" ($prohibited.Count -eq 0) ($prohibited -join "`n")
 
+    # The mirror of the check above, and the one that was missing.
+    #
+    # Guarding only against unwanted files being present says nothing about
+    # wanted files being absent. An over-broad ignore rule excludes real source
+    # silently: the build keeps working because the files are on disk, and the
+    # loss only appears when someone clones. That happened here - a rule reading
+    # "diagnostics/" matched src/SpatialAnalyzer.Core/Diagnostics, because git
+    # is configured case-insensitively on Windows.
+    $sourceOnDisk = @(Get-ChildItem (Join-Path $repoRoot 'src'), (Join-Path $repoRoot 'tests') -Recurse -File -Filter '*.cs' -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } |
+        ForEach-Object { $_.FullName.Replace($repoRoot + '\', '').Replace('\', '/') })
+
+    $untrackedSource = @($sourceOnDisk | Where-Object { $tracked -notcontains $_ })
+    Add-Result "Every source file is tracked by git" ($untrackedSource.Count -eq 0) `
+        (($untrackedSource | ForEach-Object { "$_  (run: git check-ignore -v `"$_`")" }) -join "`n")
+
     # Whitespace errors against HEAD, covering staged and unstaged alike.
     Add-Result "No whitespace errors (git diff --check)" ((Invoke-Git @('diff', 'HEAD', '--check')).ExitCode -eq 0)
 

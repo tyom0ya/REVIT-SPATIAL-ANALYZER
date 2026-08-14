@@ -23,6 +23,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
             RibbonPanel panel = CreatePanel(application);
             AddPreflightButton(panel);
             AddInspectElementButton(panel);
+            AddAuditModelButton(panel);
         }
         catch (Exception exception)
         {
@@ -102,6 +103,25 @@ public class SpatialAnalyzerApplication : IExternalApplication
             ToolTip = "Pick one element and report its category, family, type and id.",
             LongDescription = "Shows how the analysis identifies a selected element. Walls cannot be picked. "
                             + "Reads only; changes nothing.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddAuditModelButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerAuditModel",
+            text: "Audit Model",
+            assemblyName: assemblyPath,
+            className: typeof(AuditModelCommand).FullName)
+        {
+            ToolTip = "Write a full audit of this view, level and phase to a file.",
+            LongDescription = "Records categories, existing rooms, room separation lines, links, doors and "
+                            + "Revit's plan topology, so the analysis design can be checked against the "
+                            + "model rather than assumed. Reads only; changes nothing.",
         };
 
         panel.AddItem(buttonData);

@@ -9,7 +9,10 @@ x64/
 x86/
 [Aa][Rr][Mm]/
 [Aa][Rr][Mm]64/
-artifacts/
+# Leading slash anchors this to the repository root. Unanchored, it would also
+# match a source folder of the same name at any depth - and because git is
+# configured case-insensitively on Windows, it would match Artifacts/ too.
+/artifacts/
 
 # ---------------------------------------------------------------------------
 # IDE / editor
@@ -26,7 +29,7 @@ artifacts/
 # ---------------------------------------------------------------------------
 # NuGet
 # ---------------------------------------------------------------------------
-packages/
+/packages/
 *.nupkg
 *.snupkg
 
@@ -82,8 +85,8 @@ CLAUDE.local.md
 .cursor/
 .aider*
 .github/copilot-instructions.md
-research/
-transcripts/
+/research/
+/transcripts/
 
 # ---------------------------------------------------------------------------
 # Logs, diagnostics and scratch export output.
@@ -93,7 +96,11 @@ transcripts/
 *.log
 *.tmp
 *.tmp.json
-diagnostics/
+# Anchored, and for good reason: unanchored this matched the source folders
+# src/SpatialAnalyzer.Core/Diagnostics and src/SpatialAnalyzer.Revit/Diagnostics,
+# silently excluding real code from the repository. Runtime diagnostics are
+# written to local application data and never land here at all.
+/diagnostics/
 
 # ---------------------------------------------------------------------------
 # Installer output
