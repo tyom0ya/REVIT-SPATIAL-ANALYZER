@@ -25,6 +25,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
             AddInspectElementButton(panel);
             AddAuditModelButton(panel);
             AddProbeCircuitsButton(panel);
+            AddOutlineRegionsButton(panel);
             AddQualifyRegionsButton(panel);
         }
         catch (Exception exception)
@@ -143,6 +144,26 @@ public class SpatialAnalyzerApplication : IExternalApplication
             LongDescription = "Places a temporary room in every plan circuit, reads the resulting boundaries "
                             + "and doors, then rolls the change back. Asks before running. The model is left "
                             + "as it was found and the report states whether that held.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddOutlineRegionsButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerOutlineRegions",
+            text: "Outline Regions",
+            assemblyName: assemblyPath,
+            className: typeof(OutlineRegionsCommand).FullName)
+        {
+            ToolTip = "Draw and number every region on the plan, to find the ones the reports describe.",
+            LongDescription = "Adds detail lines and text to this view only. Detail lines are annotation, not "
+                            + "model geometry, and cannot bound a room. Asks before running, refuses to touch "
+                            + "the pristine model, and puts everything in one transaction so a single undo "
+                            + "removes it.",
         };
 
         panel.AddItem(buttonData);
