@@ -113,6 +113,8 @@ public static class PlanCircuitProbe
         List<BoundaryElementInfo> BoundaryElements,
         RegionInfo? AtProjectTolerance,
         RegionInfo? AtRevitTolerance,
+        List<BoundaryFeatureCollector.Found> FeaturesOnBoundary,
+        QualificationOutcome? Outcome,
         string? Failure);
 
     public static DiagnosticReport Probe(AnalysisContext context)
@@ -171,6 +173,7 @@ public static class PlanCircuitProbe
         report.Item("Model unchanged", clean ? "yes" : "NO - INVESTIGATE");
 
         WriteSummary(report, circuits);
+        WriteQualification(report, circuits);
         WriteAreaCrossCheck(report, circuits);
         WriteEntranceInvestigation(report, circuits);
         WriteCircuits(report, circuits);
@@ -311,6 +314,17 @@ public static class PlanCircuitProbe
             List<BoundaryElementInfo> boundaryElements =
                 DescribeBoundaryElements(document, curvesByBoundaryElement.Keys);
 
+            // Everything set into this boundary, tested geometrically rather
+            // than inferred from what the bounding walls happen to contain.
+            List<BoundaryFeatureCollector.Found> features =
+                BoundaryFeatureCollector.Collect(document, room, options).ToList();
+
+            // The rule applied to the region, at Revit's own tolerance. Both the
+            // rooms found and the candidates rejected are the answer.
+            var region = new CandidateRegion(new RegionId(index), loops, revitShortCurveTolerance);
+            QualificationOutcome outcome = new RoomQualifier(EntranceRule.Default)
+                .Qualify(region, features.Select(f => f.Feature).ToList());
+
             return new CircuitInfo(
                 index,
                 circuit.Area,
@@ -326,6 +340,8 @@ public static class PlanCircuitProbe
                 boundaryElements,
                 DescribeRegion(index, loops, CoincidentPointToleranceFeet),
                 DescribeRegion(index, loops, revitShortCurveTolerance),
+                features,
+                outcome,
                 null);
         }
         catch (Exception exception)
@@ -362,7 +378,8 @@ public static class PlanCircuitProbe
 
     private static CircuitInfo Failed(int index, PlanCircuit circuit, bool wasRoomLocated, string failure) =>
         new(index, circuit.Area, circuit.SideNum, wasRoomLocated, false, "(none)", 0, 0,
-            new List<LoopInfo>(), new List<string>(), 0, new List<BoundaryElementInfo>(), null, null, failure);
+            new List<LoopInfo>(), new List<string>(), 0, new List<BoundaryElementInfo>(), null, null,
+            new List<BoundaryFeatureCollector.Found>(), null, failure);
 
     /// <summary>
     /// Builds the candidate region these loops describe, and records what it
@@ -698,6 +715,82 @@ public static class PlanCircuitProbe
         report.Blank();
         report.Item("All loops closed", ok.Count(c => c.Loops.Count > 0 && c.Loops.All(l => l.IsClosed)));
         report.Item("Some loop open", ok.Count(c => c.Loops.Any(l => !l.IsClosed)));
+    }
+
+    /// <summary>
+    /// Applies the project's definition of a room, and reports both outcomes.
+    ///
+    /// The rejections are the more useful half. A list of rooms found gives no
+    /// way to tell a correct rejection from a room that was missed, so every
+    /// rejected candidate names its reason and what was on its boundary, and can
+    /// be disagreed with.
+    ///
+    /// What each region is credited with here has been tested geometrically: the
+    /// insert was projected onto the boundary curves its own host wall produced
+    /// for this space. That is the difference between an element contained by a
+    /// bounding wall and one that opens onto the space, and getting it wrong
+    /// once gave a four square metre cupboard eight doors.
+    /// </summary>
+    private static void WriteQualification(DiagnosticReport report, List<CircuitInfo> circuits)
+    {
+        report.Section("QUALIFICATION (is this region a room?)");
+
+        List<CircuitInfo> judged = circuits.Where(c => c.Outcome is not null).ToList();
+
+        report.Item("Regions judged", judged.Count);
+        report.Item("  rooms", judged.Count(c => c.Outcome!.IsQualified));
+        report.Item("  rejected", judged.Count(c => !c.Outcome!.IsQualified));
+        report.Blank();
+
+        foreach (RejectionReason reason in Enum.GetValues<RejectionReason>())
+        {
+            report.Item(
+                string.Create(CultureInfo.InvariantCulture, $"  rejected: {reason}"),
+                judged.Count(c => c.Outcome!.Reason == reason));
+        }
+
+        report.Blank();
+        report.Line("  Rooms found:");
+        foreach (CircuitInfo circuit in judged.Where(c => c.Outcome!.IsQualified))
+        {
+            double squareMetres = UnitUtils.ConvertFromInternalUnits(circuit.RoomAreaFeet2, UnitTypeId.SquareMeters);
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"    [{circuit.Index,-3}] {squareMetres,9:0.###} m2   {circuit.Outcome!.Explanation}"));
+        }
+
+        report.Blank();
+        report.Line("  Candidates rejected:");
+        foreach (CircuitInfo circuit in judged.Where(c => !c.Outcome!.IsQualified))
+        {
+            double squareMetres = UnitUtils.ConvertFromInternalUnits(circuit.RoomAreaFeet2, UnitTypeId.SquareMeters);
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"    [{circuit.Index,-3}] {squareMetres,9:0.###} m2   {circuit.Outcome!.Reason}"));
+            report.Line($"           {circuit.Outcome!.Explanation}");
+        }
+
+        report.Blank();
+        report.Line("  Everything found on each boundary, with how far it projected onto it:");
+        report.Line("  An insert counts only if it lands on a boundary curve produced by its own host.");
+
+        foreach (CircuitInfo circuit in judged)
+        {
+            if (circuit.FeaturesOnBoundary.Count == 0)
+            {
+                continue;
+            }
+
+            report.Blank();
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"    [{circuit.Index}]"));
+
+            foreach (BoundaryFeatureCollector.Found found in circuit.FeaturesOnBoundary)
+            {
+                report.Line(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"        {found.Feature.Kind,-22} {found.Feature.Element}   host {found.HostElementId}   at {found.DistanceFeet:0.###} ft"));
+            }
+        }
     }
 
     /// <summary>

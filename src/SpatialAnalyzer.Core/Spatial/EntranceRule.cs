@@ -38,15 +38,15 @@ public sealed class EntranceRule
     /// exercises. Nineteen of its thirty spaces are reached through one.
     ///
     /// Opening - a hole cut through a bounding element is a way through by
-    /// definition. The model contains exactly one and it has not been shown to
-    /// lie on any region's boundary, so this is included on principle rather
-    /// than on evidence, and is marked as such.
+    /// definition. The model contains exactly one, and it is the sole way into a
+    /// two and a third square metre space that would otherwise be rejected.
     ///
-    /// CurtainWallDoorPanel - a door panel in a curtain wall is a door. The
-    /// model contains one, in a wall typed "_Not Defined". Whether it opens onto
-    /// the tiny space beside it is a geometric question answered elsewhere; if
-    /// it does, a third of a square metre becomes a room, and that is a
-    /// conclusion worth surfacing rather than one to be quietly prevented here.
+    /// CurtainWallDoorPanel - a door panel in a curtain wall is a door. Two
+    /// spaces are reached through one, including a stair whose glazing carries a
+    /// storefront door. The worry that recording these would turn a third of a
+    /// square metre into a room came from reading which walls contain what;
+    /// tested geometrically, that panel opens onto a four square metre lobby
+    /// instead, and the sliver beside it has nothing on its boundary at all.
     ///
     /// What is refused, and why:
     ///
@@ -63,10 +63,20 @@ public sealed class EntranceRule
     /// through.
     ///
     /// EmbeddedWall - a wall embedded in a wall is still a wall. The model
-    /// embeds runs of exterior rainscreen into exterior rainscreen. An earlier
-    /// draft of this project intended to admit them, on the theory that a large
-    /// interior room was entered through an embedded storefront; the model
-    /// showed that those storefronts do not bound that room at all.
+    /// embeds runs of exterior rainscreen into exterior rainscreen, and glazed
+    /// storefronts into a chase wall.
+    ///
+    /// This last one is the rule's known open case, and it is left open on
+    /// purpose. A hundred and seven square metre retail unit is enclosed partly
+    /// by two "Block 41 Storefront" curtain walls, which do lie on its boundary,
+    /// and between them they have twenty solid panels and thirty glazed ones and
+    /// no door. So the space is rejected: the model records no way into it. A
+    /// person who knows the building will say a shopfront is obviously where you
+    /// go in, and they are describing the building rather than the model.
+    /// Admitting curtain walls would qualify that one space and change nothing
+    /// else here - which is a reason to look again, not a justification, because
+    /// a rule adjusted until one model's count comes out right has stopped being
+    /// a rule.
     /// </summary>
     public static EntranceRule Default { get; } = new(new[]
     {
