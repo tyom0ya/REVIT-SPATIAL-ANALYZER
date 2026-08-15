@@ -6,6 +6,7 @@ using Autodesk.Revit.UI.Selection;
 using SpatialAnalyzer.Core.Diagnostics;
 using SpatialAnalyzer.Core.Domain;
 using SpatialAnalyzer.Core.Spatial;
+using SpatialAnalyzer.Revit.Analysis;
 using SpatialAnalyzer.Revit.Boundaries;
 using SpatialAnalyzer.Revit.Context;
 using SpatialAnalyzer.Revit.Diagnostics;
@@ -71,17 +72,15 @@ public class QualifyRegionsCommand : IExternalCommand
             return Result.Cancelled;
         }
 
-        var outcomes = reading.Regions
-            .Select(r => (Reading: r, Outcome: qualifier.Qualify(r.Region, r.Features.Select(f => f.Feature).ToList(), confirmed)))
-            .ToList();
+        // Built through the same assembly the selection workflow uses, and kept,
+        // so that answers a person gave here carry into later questions about
+        // this plan instead of being asked again.
+        PlanAnalysis.Result analysis = PlanAnalysis.From(context, reading, confirmed);
+        PlanAnalysisCache.Store(context, analysis);
 
-        var adjacency = DoorAdjacencyIndex.Build(
-            reading.Regions.ToDictionary(
-                r => r.Region.Id,
-                r => (IReadOnlyList<BoundaryFeature>)r.Features.Select(f => f.Feature).ToList()),
-            EntranceRule.Default);
+        var outcomes = analysis.Outcomes.ToList();
 
-        DiagnosticReport report = BuildReport(context, reading, outcomes, confirmed, adjacency);
+        DiagnosticReport report = BuildReport(context, reading, outcomes, confirmed, analysis.Index.Doors);
 
         string path;
         try

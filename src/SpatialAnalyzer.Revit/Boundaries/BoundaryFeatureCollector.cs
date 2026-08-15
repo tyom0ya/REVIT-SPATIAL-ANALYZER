@@ -2,6 +2,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Architecture;
 using SpatialAnalyzer.Core.Domain;
 using SpatialAnalyzer.Core.Spatial;
+using SpatialAnalyzer.Revit.Elements;
 using RevitBoundarySegment = Autodesk.Revit.DB.BoundarySegment;
 
 namespace SpatialAnalyzer.Revit.Boundaries;
@@ -136,7 +137,7 @@ public static class BoundaryFeatureCollector
     {
         distance = double.MaxValue;
 
-        foreach (XYZ point in PointsOn(insert))
+        foreach (XYZ point in ElementPlanPoint.AllOn(insert))
         {
             foreach (Curve curve in curves)
             {
@@ -154,32 +155,6 @@ public static class BoundaryFeatureCollector
         }
 
         return distance <= allowance;
-    }
-
-    private static IEnumerable<XYZ> PointsOn(Element element)
-    {
-        switch (element.Location)
-        {
-            case LocationPoint point:
-                yield return point.Point;
-                yield break;
-
-            case LocationCurve locationCurve:
-                Curve curve = locationCurve.Curve;
-                yield return curve.Evaluate(0.0, true);
-                yield return curve.Evaluate(0.5, true);
-                yield return curve.Evaluate(1.0, true);
-                yield break;
-        }
-
-        // Openings carry no Location, so their extent is the only thing to go
-        // on. The view argument is null deliberately: the model bounding box is
-        // wanted, not what some view crops it to.
-        BoundingBoxXYZ? box = element.get_BoundingBox(null);
-        if (box is not null)
-        {
-            yield return (box.Min + box.Max) / 2.0;
-        }
     }
 
     /// <summary>

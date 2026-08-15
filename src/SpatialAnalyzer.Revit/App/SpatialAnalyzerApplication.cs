@@ -1,5 +1,6 @@
 using System.Reflection;
 using Autodesk.Revit.UI;
+using SpatialAnalyzer.Revit.Analysis;
 using SpatialAnalyzer.Revit.Commands;
 
 namespace SpatialAnalyzer.Revit.App;
@@ -27,6 +28,11 @@ public class SpatialAnalyzerApplication : IExternalApplication
             AddProbeCircuitsButton(panel);
             AddOutlineRegionsButton(panel);
             AddQualifyRegionsButton(panel);
+            AddAnalyzeSelectionButton(panel);
+
+            // Listens for changes so a kept analysis is discarded the moment the
+            // model it describes moves.
+            PlanAnalysisCache.Attach(application.ControlledApplication);
         }
         catch (Exception exception)
         {
@@ -40,7 +46,20 @@ public class SpatialAnalyzerApplication : IExternalApplication
         return Result.Succeeded;
     }
 
-    public Result OnShutdown(UIControlledApplication application) => Result.Succeeded;
+    public Result OnShutdown(UIControlledApplication application)
+    {
+        try
+        {
+            PlanAnalysisCache.Detach(application.ControlledApplication);
+        }
+        catch (Exception)
+        {
+            // Revit is closing. An add-in that throws on the way out achieves
+            // nothing except an error message the user cannot act on.
+        }
+
+        return Result.Succeeded;
+    }
 
     private static RibbonPanel CreatePanel(UIControlledApplication application)
     {
@@ -164,6 +183,26 @@ public class SpatialAnalyzerApplication : IExternalApplication
                             + "model geometry, and cannot bound a room. Asks before running, refuses to touch "
                             + "the pristine model, and puts everything in one transaction so a single undo "
                             + "removes it.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddAnalyzeSelectionButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerAnalyzeSelection",
+            text: "Analyze Selection",
+            assemblyName: assemblyPath,
+            className: typeof(AnalyzeSelectionCommand).FullName)
+        {
+            ToolTip = "Pick an element and be told which granular room it is in.",
+            LongDescription = "A door is answered by the two rooms it connects rather than by where it "
+                            + "stands, because a door stands inside a wall. Where an element is in no "
+                            + "room, the region it does fall in is named along with the reason that "
+                            + "region was not reported as a room. Reads only; changes nothing.",
         };
 
         panel.AddItem(buttonData);
