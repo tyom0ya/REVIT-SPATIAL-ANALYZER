@@ -197,6 +197,40 @@ public class RoomMembershipTests
         Assert.Equal(2, membership.Rooms.Count);
     }
 
+    /// <summary>
+    /// A wall's own position is inside itself, and a wall is carved out of every
+    /// space it bounds, so asking which room contains it gives a true and
+    /// useless answer. The relation that matters is the other one.
+    /// </summary>
+    [Fact]
+    public void AWallIsNotInARoomButBoundsSeveral()
+    {
+        BoundaryLoop left = Rect(0, 0, 10, 8);
+        BoundaryLoop right = Rect(10, 0, 10, 8);
+
+        var resolver = new RoomMembershipResolver(new[] { Room(0, left), Room(1, right) }, NoDoors());
+
+        // The wall shared by both rooms: the right edge of one is the left edge
+        // of the other, so take an element id that appears in both boundaries.
+        RevitElementId shared = left.Segments[1].Reference.ElementId;
+
+        Assert.Equal(new[] { new RegionId(0) }, resolver.RoomsBoundedBy(shared));
+        Assert.Empty(resolver.RoomsBoundedBy(new RevitElementId(999999)));
+    }
+
+    [Fact]
+    public void RoomsBoundedByAnElementAreListedInAStableOrder()
+    {
+        BoundaryLoop shared = Rect(0, 0, 10, 8);
+        RevitElementId wall = shared.Segments[0].Reference.ElementId;
+
+        var resolver = new RoomMembershipResolver(
+            new[] { Room(9, shared), Room(4, shared) },
+            NoDoors());
+
+        Assert.Equal(new[] { new RegionId(4), new RegionId(9) }, resolver.RoomsBoundedBy(wall));
+    }
+
     [Fact]
     public void TheAnswerNamesTheElementItIsAbout()
     {

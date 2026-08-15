@@ -163,6 +163,24 @@ public sealed class RoomMembershipResolver
     }
 
     /// <summary>
+    /// The rooms this element encloses.
+    ///
+    /// A wall or a column is not in a room; it is part of what makes rooms.
+    /// Asking which room contains it gives a true and useless answer, because
+    /// its own position is inside itself, and a wall is carved out of every
+    /// space it bounds. What is actually wanted is the other relation, and the
+    /// boundaries already record it.
+    ///
+    /// In room order, so that two runs over an unchanged model agree.
+    /// </summary>
+    public IReadOnlyList<RegionId> RoomsBoundedBy(RevitElementId element) =>
+        _rooms
+            .Where(room => room.BoundingReferences.Any(reference => reference.ElementId == element))
+            .Select(room => room.Id)
+            .OrderBy(id => id)
+            .ToList();
+
+    /// <summary>
     /// An adjacency may name a region that did not qualify as a room - a door
     /// into a lift shaft, say. Only rooms are reported, because a region this
     /// analysis declined to call a room is not one to hand back as an answer.

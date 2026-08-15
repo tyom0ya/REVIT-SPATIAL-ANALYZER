@@ -27,6 +27,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
             AddProbeCircuitsButton(panel);
             AddOutlineRegionsButton(panel);
             AddQualifyRegionsButton(panel);
+            AddAnalyzeSelectionButton(panel);
         }
         catch (Exception exception)
         {
@@ -164,6 +165,26 @@ public class SpatialAnalyzerApplication : IExternalApplication
                             + "model geometry, and cannot bound a room. Asks before running, refuses to touch "
                             + "the pristine model, and puts everything in one transaction so a single undo "
                             + "removes it.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddAnalyzeSelectionButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerAnalyzeSelection",
+            text: "Analyze Selection",
+            assemblyName: assemblyPath,
+            className: typeof(AnalyzeSelectionCommand).FullName)
+        {
+            ToolTip = "Pick an element and be told which granular room it is in.",
+            LongDescription = "A door is answered by the two rooms it connects rather than by where it "
+                            + "stands, because a door stands inside a wall. Where an element is in no "
+                            + "room, the region it does fall in is named along with the reason that "
+                            + "region was not reported as a room. Reads only; changes nothing.",
         };
 
         panel.AddItem(buttonData);
