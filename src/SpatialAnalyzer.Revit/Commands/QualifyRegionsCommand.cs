@@ -75,7 +75,13 @@ public class QualifyRegionsCommand : IExternalCommand
             .Select(r => (Reading: r, Outcome: qualifier.Qualify(r.Region, r.Features.Select(f => f.Feature).ToList(), confirmed)))
             .ToList();
 
-        DiagnosticReport report = BuildReport(context, reading, outcomes, confirmed);
+        var adjacency = DoorAdjacencyIndex.Build(
+            reading.Regions.ToDictionary(
+                r => r.Region.Id,
+                r => (IReadOnlyList<BoundaryFeature>)r.Features.Select(f => f.Feature).ToList()),
+            EntranceRule.Default);
+
+        DiagnosticReport report = BuildReport(context, reading, outcomes, confirmed, adjacency);
 
         string path;
         try
@@ -214,11 +220,108 @@ public class QualifyRegionsCommand : IExternalCommand
         return (confirmed, false);
     }
 
+    /// <summary>
+    /// Reports what each door connects, and sets it beside what Revit's own
+    /// parameters say.
+    ///
+    /// The comparison is the justification for not using FromRoom and ToRoom.
+    /// They describe placed rooms rather than granular spaces, so where a placed
+    /// room spans several of the regions this analysis finds, they name the same
+    /// room on both sides of a door that plainly divides something; and where no
+    /// room has been placed at all, which is most of this level, they are silent.
+    /// Printing both columns lets that be seen rather than asserted.
+    /// </summary>
+    private static void WriteAdjacency(
+        DiagnosticReport report,
+        AnalysisContext context,
+        RegionQualification.Reading reading,
+        DoorAdjacencyIndex adjacency)
+    {
+        report.Section("WHAT EACH DOOR CONNECTS");
+
+        report.Item("Connectors found", adjacency.Adjacencies.Count);
+        foreach (DoorConnection connection in Enum.GetValues<DoorConnection>())
+        {
+            report.Item(
+                string.Create(CultureInfo.InvariantCulture, $"  {connection}"),
+                adjacency.Adjacencies.Count(a => a.Connection == connection));
+        }
+
+        report.Item("Ambiguous (on more than two boundaries)", adjacency.Ambiguous.Count);
+        report.Blank();
+
+        // Which regions became rooms, so the report can say when a door leads
+        // somewhere this analysis decided was not a room.
+        var rooms = new HashSet<RegionId>(
+            reading.Regions.Select(r => r.Region.Id));
+
+        report.Line("  ours                                  |  revit FromRoom / ToRoom");
+        report.Line("  --------------------------------------+--------------------------");
+
+        foreach (DoorAdjacency door in adjacency.Adjacencies)
+        {
+            string ours = door.Connection == DoorConnection.BetweenTwoRegions
+                ? string.Create(CultureInfo.InvariantCulture, $"{door.Regions[0]} <-> {door.Regions[1]}")
+                : string.Create(CultureInfo.InvariantCulture, $"{string.Join(", ", door.Regions)} only");
+
+            string revit = DescribeRevitsView(context, door.Door.Id);
+
+            string type = door.Door.TypeName.Length > 28
+                ? door.Door.TypeName[..28]
+                : door.Door.TypeName;
+
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  [{door.Door.Id.Value,-9}] {type,-29} {ours,-14}|  {revit}"));
+        }
+
+        foreach (AmbiguousConnector ambiguous in adjacency.Ambiguous)
+        {
+            report.Blank();
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"  AMBIGUOUS  {ambiguous}"));
+        }
+
+        report.Blank();
+        report.Line("  A door reporting one region only may open to the outside, to another");
+        report.Line("  level, or to a region this analysis did not accept as a room. The");
+        report.Line("  evidence does not distinguish those, and this does not pretend it does.");
+
+        if (rooms.Count == 0)
+        {
+            report.Line("  No regions were read, so nothing could be connected.");
+        }
+    }
+
+    private static string DescribeRevitsView(AnalysisContext context, RevitElementId doorId)
+    {
+        if (context.Document.GetElement(new ElementId(doorId.Value)) is not FamilyInstance door)
+        {
+            // Curtain wall door panels are family instances too, but anything
+            // that is not one has no such parameters to report.
+            return "(not a family instance)";
+        }
+
+        string Name(Autodesk.Revit.DB.Architecture.Room? room) =>
+            room is null ? "(none)" : $"{room.Number} {room.Name}".Trim();
+
+        try
+        {
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"{Name(door.get_FromRoom(context.Phase))}  ->  {Name(door.get_ToRoom(context.Phase))}");
+        }
+        catch (Exception exception)
+        {
+            return $"({exception.GetType().Name})";
+        }
+    }
+
     private static DiagnosticReport BuildReport(
         AnalysisContext context,
         RegionQualification.Reading reading,
         List<(RegionQualification.RegionReading Reading, QualificationOutcome Outcome)> outcomes,
-        HashSet<RevitElementId> confirmed)
+        HashSet<RevitElementId> confirmed,
+        DoorAdjacencyIndex adjacency)
     {
         var report = new DiagnosticReport("REVIT SPATIAL ANALYZER - QUALIFICATION");
 
@@ -291,6 +394,8 @@ public class QualifyRegionsCommand : IExternalCommand
                 }
             }
         }
+
+        WriteAdjacency(report, context, reading, adjacency);
 
         report.Section("EVERYTHING ON EACH BOUNDARY");
         report.Line("  Tested geometrically: an insert counts only where it lands on a boundary");
