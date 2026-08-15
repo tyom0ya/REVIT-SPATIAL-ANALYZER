@@ -1,3 +1,4 @@
+using System.Globalization;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -68,7 +69,9 @@ public class PreflightCommand : IExternalCommand
     private static string FormatElevation(double internalFeet)
     {
         double millimetres = UnitUtils.ConvertFromInternalUnits(internalFeet, UnitTypeId.Millimeters);
-        return $"{millimetres:0.#} mm  ({internalFeet:0.####} ft internal)";
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{millimetres:0.#} mm  ({internalFeet:0.####} ft internal)");
     }
 
     private static void ShowDialog(string verdict, List<string> lines, bool ready)

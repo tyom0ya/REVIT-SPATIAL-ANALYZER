@@ -107,6 +107,49 @@ public class DiagnosticReportTests
         }
     }
 
+    /// <summary>
+    /// A label as wide as the alignment column used to run straight into its
+    /// value, so "Enclosed at Revit's ShortCurveTolerance" followed by 30 read
+    /// as "...Tolerance30". Padding silently does nothing once a label is
+    /// already wide enough, which is exactly when a separator matters most.
+    /// </summary>
+    [Fact]
+    public void ALabelTooWideToPadIsStillSeparatedFromItsValue()
+    {
+        var report = new DiagnosticReport("R");
+        string wide = new('x', 40);
+        report.Item(wide, 30L);
+
+        string[] lines = report.ToText().Split(DiagnosticReport.LineSeparator);
+
+        Assert.Contains(lines, l => l == wide + " 30");
+        Assert.DoesNotContain(lines, l => l == wide + "30");
+    }
+
+    [Fact]
+    public void ALabelExactlyAtTheColumnIsAlsoSeparated()
+    {
+        var report = new DiagnosticReport("R");
+        string atWidth = new('x', 34);
+        report.Item(atWidth, 7L);
+
+        Assert.Contains(atWidth + " 7", report.ToText());
+    }
+
+    [Fact]
+    public void ShorterLabelsStillLineUpInAColumn()
+    {
+        var report = new DiagnosticReport("R");
+        report.Item("a", 1L);
+        report.Item("bb", 2L);
+
+        string[] lines = report.ToText().Split(DiagnosticReport.LineSeparator);
+        int first = Array.FindIndex(lines, l => l.EndsWith("1", StringComparison.Ordinal));
+        int second = Array.FindIndex(lines, l => l.EndsWith("2", StringComparison.Ordinal));
+
+        Assert.Equal(lines[first].IndexOf('1'), lines[second].IndexOf('2'));
+    }
+
     [Fact]
     public void LineEndings_DoNotFollowTheHost()
     {

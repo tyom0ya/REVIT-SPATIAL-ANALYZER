@@ -1,3 +1,4 @@
+using System.Globalization;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Architecture;
 using SpatialAnalyzer.Core.Diagnostics;
@@ -52,11 +53,11 @@ public static class ModelAuditor
     private static void WriteContext(DiagnosticReport report, AnalysisContext context)
     {
         report.Section("ANALYSIS CONTEXT");
-        report.Item("View", $"{context.View.Name}  (id {context.View.Id.Value})");
+        report.Item("View", string.Create(CultureInfo.InvariantCulture, $"{context.View.Name}  (id {context.View.Id.Value})"));
         report.Item("View type", context.View.ViewType.ToString());
-        report.Item("Level", $"{context.Level.Name}  (id {context.Level.Id.Value})");
+        report.Item("Level", string.Create(CultureInfo.InvariantCulture, $"{context.Level.Name}  (id {context.Level.Id.Value})"));
         report.Item("Level elevation (ft)", context.Level.Elevation);
-        report.Item("Phase", $"{context.Phase.Name}  (id {context.Phase.Id.Value})");
+        report.Item("Phase", string.Create(CultureInfo.InvariantCulture, $"{context.Phase.Name}  (id {context.Phase.Id.Value})"));
     }
 
     /// <summary>
@@ -77,7 +78,7 @@ public static class ModelAuditor
         report.Blank();
         foreach (Level level in levels)
         {
-            report.Line($"  {level.Name,-24} elevation {level.Elevation,10:0.####} ft   id {level.Id.Value}");
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"  {level.Name,-24} elevation {level.Elevation,10:0.####} ft   id {level.Id.Value}"));
         }
 
         report.Section("PLAN VIEWS");
@@ -94,7 +95,7 @@ public static class ModelAuditor
         foreach (ViewPlan view in planViews)
         {
             string levelName = view.GenLevel?.Name ?? "(no level)";
-            report.Line($"  {view.ViewType,-18} {view.Name,-34} level {levelName,-16} id {view.Id.Value}");
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"  {view.ViewType,-18} {view.Name,-34} level {levelName,-16} id {view.Id.Value}"));
         }
     }
 
@@ -162,12 +163,12 @@ public static class ModelAuditor
         foreach (Room room in placed.OrderBy(r => r.Number, StringComparer.Ordinal).Take(SampleLimit))
         {
             double squareMetres = UnitUtils.ConvertFromInternalUnits(room.Area, UnitTypeId.SquareMeters);
-            report.Line($"    {room.Number,-8} {room.Name,-32} {squareMetres,9:0.##} m2   id {room.Id.Value}");
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"    {room.Number,-8} {room.Name,-32} {squareMetres,9:0.##} m2   id {room.Id.Value}"));
         }
 
         if (placed.Count > SampleLimit)
         {
-            report.Line($"    ... and {placed.Count - SampleLimit} more");
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"    ... and {placed.Count - SampleLimit} more"));
         }
     }
 
@@ -208,7 +209,7 @@ public static class ModelAuditor
         {
             Document? linked = link.GetLinkDocument();
             string state = linked is null ? "NOT LOADED" : "loaded";
-            report.Line($"  {link.Name,-52} {state}   id {link.Id.Value}");
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"  {link.Name,-52} {state}   id {link.Id.Value}"));
         }
 
         if (links.Count == 0)
@@ -253,7 +254,7 @@ public static class ModelAuditor
 
             if (samples.Count < SampleLimit)
             {
-                samples.Add($"    id {door.Id.Value,-10} from {Describe(from),-28} to {Describe(to),-28}");
+                samples.Add(string.Create(CultureInfo.InvariantCulture, $"    id {door.Id.Value,-10} from {Describe(from),-28} to {Describe(to),-28}"));
             }
         }
 
@@ -326,7 +327,7 @@ public static class ModelAuditor
             // any later containment test.
             UV point = circuit.GetPointInside();
 
-            report.Line($"  {index,-8} {squareMetres,10:0.##}   {circuit.SideNum,5}   {circuit.IsRoomLocated,-12}   ({point.U:0.##}, {point.V:0.##})");
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"  {index,-8} {squareMetres,10:0.##}   {circuit.SideNum,5}   {circuit.IsRoomLocated,-12}   ({point.U:0.##}, {point.V:0.##})"));
             index++;
         }
 

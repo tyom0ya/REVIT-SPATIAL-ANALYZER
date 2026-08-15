@@ -1,3 +1,4 @@
+using System.Globalization;
 using SpatialAnalyzer.Core.Geometry;
 
 namespace SpatialAnalyzer.Core.Tests.Geometry;
@@ -97,6 +98,34 @@ public class BoundaryCurveTests
     /// about the model, so it is allowed through and left for the caller to
     /// notice.
     /// </summary>
+    /// <summary>
+    /// Curves are described in diagnostic reports that get compared between
+    /// runs and between machines, so a length must not render as 1,5 on one and
+    /// 1.5 on another. Swedish is included because it writes a negative with
+    /// U+2212 rather than a hyphen, which is the case that slips past a decimal
+    /// separator check.
+    /// </summary>
+    [Theory]
+    [InlineData("en-US")]
+    [InlineData("de-DE")]
+    [InlineData("sv-SE")]
+    public void ToString_IsCultureInvariant(string culture)
+    {
+        CultureInfo original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo(culture);
+
+            string text = BoundaryCurve.Straight(new Point2D(-1.5, 0), new Point2D(0, 0)).ToString();
+
+            Assert.Equal("Line (-1.5, 0) -> (0, 0) (1.5 ft)", text);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
     [Fact]
     public void AZeroLengthCurveIsAllowedThrough()
     {

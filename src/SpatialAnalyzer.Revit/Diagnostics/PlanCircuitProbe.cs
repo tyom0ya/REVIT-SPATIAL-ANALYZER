@@ -1,6 +1,8 @@
+using System.Globalization;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Architecture;
 using SpatialAnalyzer.Core.Diagnostics;
+using SpatialAnalyzer.Core.Spatial;
 using SpatialAnalyzer.Revit.Boundaries;
 using SpatialAnalyzer.Revit.Context;
 using CoreBoundaryLoop = SpatialAnalyzer.Core.Geometry.BoundaryLoop;
@@ -62,6 +64,18 @@ public static class PlanCircuitProbe
         string WallKind,
         List<string> Inserts);
 
+    /// <summary>
+    /// What the candidate region built from these loops makes of them, at one
+    /// stated closure tolerance.
+    /// </summary>
+    private sealed record RegionInfo(
+        double ToleranceFeet,
+        bool IsEnclosed,
+        double? NetAreaFeet2,
+        int InnerLoopCount,
+        int? OuterLoopIndex,
+        List<string> LoopWindings);
+
     private sealed record CircuitInfo(
         int Index,
         double CircuitAreaFeet2,
@@ -75,6 +89,8 @@ public static class PlanCircuitProbe
         List<string> DoorsOnBoundary,
         int DoorsHostedByBoundaryWalls,
         List<BoundaryElementInfo> BoundaryElements,
+        RegionInfo? AtProjectTolerance,
+        RegionInfo? AtRevitTolerance,
         string? Failure);
 
     public static DiagnosticReport Probe(AnalysisContext context)
@@ -89,7 +105,17 @@ public static class PlanCircuitProbe
         report.Item("Level", context.Level.Name);
         report.Item("Phase", context.Phase.Name);
         report.Item("Boundary location", BoundaryLocation.ToString());
-        report.Item("Closure tolerance (ft)", CoincidentPointToleranceFeet);
+        report.Item("Closure tolerance, this project (ft)", CoincidentPointToleranceFeet);
+
+        // Read from Revit rather than quoted from documentation. The project's
+        // own tolerance was chosen before these were known, and one circuit sits
+        // just the wrong side of it, so what Revit itself treats as
+        // indistinguishable is the number that decides whether that is a real
+        // discontinuity or two records of one location.
+        double revitShortCurveTolerance = document.Application.ShortCurveTolerance;
+        double revitVertexTolerance = document.Application.VertexTolerance;
+        report.Item("Revit ShortCurveTolerance (ft)", revitShortCurveTolerance);
+        report.Item("Revit VertexTolerance (ft)", revitVertexTolerance);
         report.Item("Generated", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
 
         int roomsBefore = CountRooms(document);
@@ -105,7 +131,7 @@ public static class PlanCircuitProbe
             transaction.Start();
             try
             {
-                circuits = Collect(context);
+                circuits = Collect(context, revitShortCurveTolerance);
             }
             finally
             {
@@ -123,6 +149,7 @@ public static class PlanCircuitProbe
         report.Item("Model unchanged", clean ? "yes" : "NO - INVESTIGATE");
 
         WriteSummary(report, circuits);
+        WriteAreaCrossCheck(report, circuits);
         WriteEntranceInvestigation(report, circuits);
         WriteCircuits(report, circuits);
         WriteBoundaryCategoryCensus(report, circuits);
@@ -137,7 +164,7 @@ public static class PlanCircuitProbe
             .WhereElementIsNotElementType()
             .GetElementCount();
 
-    private static List<CircuitInfo> Collect(AnalysisContext context)
+    private static List<CircuitInfo> Collect(AnalysisContext context, double revitShortCurveTolerance)
     {
         Document document = context.Document;
         var results = new List<CircuitInfo>();
@@ -171,7 +198,8 @@ public static class PlanCircuitProbe
         int index = 0;
         foreach (PlanCircuit circuit in circuits.OrderByDescending(c => c.Area))
         {
-            results.Add(Describe(document, context, circuit, index, options, existingRooms, doorsByHost));
+            results.Add(Describe(
+                document, context, circuit, index, options, existingRooms, doorsByHost, revitShortCurveTolerance));
             index++;
         }
 
@@ -212,7 +240,8 @@ public static class PlanCircuitProbe
         int index,
         SpatialElementBoundaryOptions options,
         List<Room> existingRooms,
-        Dictionary<long, List<FamilyInstance>> doorsByHost)
+        Dictionary<long, List<FamilyInstance>> doorsByHost,
+        double revitShortCurveTolerance)
     {
         bool wasRoomLocated = circuit.IsRoomLocated;
         bool temporary = false;
@@ -273,6 +302,8 @@ public static class PlanCircuitProbe
                 onBoundary,
                 hostedTotal,
                 boundaryElements,
+                DescribeRegion(index, loops, CoincidentPointToleranceFeet),
+                DescribeRegion(index, loops, revitShortCurveTolerance),
                 null);
         }
         catch (Exception exception)
@@ -309,7 +340,48 @@ public static class PlanCircuitProbe
 
     private static CircuitInfo Failed(int index, PlanCircuit circuit, bool wasRoomLocated, string failure) =>
         new(index, circuit.Area, circuit.SideNum, wasRoomLocated, false, "(none)", 0, 0,
-            new List<LoopInfo>(), new List<string>(), 0, new List<BoundaryElementInfo>(), failure);
+            new List<LoopInfo>(), new List<string>(), 0, new List<BoundaryElementInfo>(), null, null, failure);
+
+    /// <summary>
+    /// Builds the candidate region these loops describe, and records what it
+    /// makes of them.
+    ///
+    /// This is the point of the exercise. The region computes its own area from
+    /// the extracted geometry, with interior voids taken out, while Revit
+    /// computed one independently for the same room. Two derivations of one
+    /// number from one boundary either agree or reveal which is wrong.
+    /// </summary>
+    private static RegionInfo DescribeRegion(int index, IReadOnlyList<CoreBoundaryLoop> loops, double tolerance)
+    {
+        var region = new CandidateRegion(new RegionId(index), loops, tolerance);
+
+        var windings = new List<string>(region.LoopAreas.Count);
+        foreach (var area in region.LoopAreas)
+        {
+            windings.Add(area.IsMeasured ? area.Winding.ToString() : "open");
+        }
+
+        // Recorded so the convention that Revit returns the outer loop first can
+        // be checked against the model rather than assumed. The region itself
+        // identifies the outer loop by measured area and never by position.
+        int? outerIndex = null;
+        for (int i = 0; i < region.Loops.Count; i++)
+        {
+            if (ReferenceEquals(region.Loops[i], region.OuterLoop))
+            {
+                outerIndex = i;
+                break;
+            }
+        }
+
+        return new RegionInfo(
+            tolerance,
+            region.IsEnclosed,
+            region.NetArea.TryGetInternalSquareFeet(out double net) ? net : null,
+            region.InnerLoops.Count,
+            outerIndex,
+            windings);
+    }
 
     /// <summary>
     /// Describes each element bounding a space, and everything inserted into it.
@@ -357,7 +429,9 @@ public static class PlanCircuitProbe
                         continue;
                     }
 
-                    inserts.Add($"{insert.Category?.Name ?? "(no category)"} id {insertId.Value} \"{insert.Name}\"");
+                    inserts.Add(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"{insert.Category?.Name ?? "(no category)"} id {insertId.Value} \"{insert.Name}\""));
                 }
             }
 
@@ -488,7 +562,9 @@ public static class PlanCircuitProbe
                     IntersectionResult? projection = curve.Project(flattened);
                     if (projection is not null && projection.Distance <= allowance)
                     {
-                        onBoundary.Add($"id {door.Id.Value} host {boundaryElementId} at {projection.Distance:0.###} ft");
+                        onBoundary.Add(string.Create(
+                            CultureInfo.InvariantCulture,
+                            $"id {door.Id.Value} host {boundaryElementId} at {projection.Distance:0.###} ft"));
                         break;
                     }
                 }
@@ -522,6 +598,123 @@ public static class PlanCircuitProbe
     }
 
     /// <summary>
+    /// Checks the area this project computes against the area Revit computed.
+    ///
+    /// Both come from the same boundary, by different routes. Ours is measured
+    /// from the extracted geometry, using the tessellation for curves and taking
+    /// interior voids out; Revit's comes from its own room. Agreement is
+    /// evidence that the copy is faithful, that voids are being subtracted and
+    /// not counted, and that the loop identified as the outer one really is the
+    /// outer one - none of which the unit tests can establish, because they use
+    /// shapes this project wrote itself.
+    ///
+    /// Both tolerances are reported. The project's own was chosen before Revit's
+    /// were known, and one circuit's boundary falls between them, so this is the
+    /// evidence for which number should decide whether a discontinuity is a real
+    /// opening or one location recorded twice.
+    /// </summary>
+    private static void WriteAreaCrossCheck(DiagnosticReport report, List<CircuitInfo> circuits)
+    {
+        report.Section("AREA CROSS-CHECK (this project vs Revit, same boundary)");
+
+        List<CircuitInfo> ok = circuits.Where(c => c.Failure is null && c.AtProjectTolerance is not null).ToList();
+
+        report.Item("Enclosed at this project's tolerance", ok.Count(c => c.AtProjectTolerance!.IsEnclosed));
+        report.Item("Enclosed at Revit's ShortCurveTolerance", ok.Count(c => c.AtRevitTolerance!.IsEnclosed));
+        report.Blank();
+
+        var deviations = new List<double>();
+        var rows = new List<string>();
+
+        foreach (CircuitInfo circuit in ok)
+        {
+            RegionInfo atRevit = circuit.AtRevitTolerance!;
+            double revitM2 = UnitUtils.ConvertFromInternalUnits(circuit.RoomAreaFeet2, UnitTypeId.SquareMeters);
+
+            if (atRevit.NetAreaFeet2 is not double ours)
+            {
+                rows.Add(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"  [{circuit.Index,-3}] revit {revitM2,9:0.###} m2   ours        -         NOT ENCLOSED even at Revit's own tolerance"));
+                continue;
+            }
+
+            double oursM2 = UnitUtils.ConvertFromInternalUnits(ours, UnitTypeId.SquareMeters);
+            double deviation = oursM2 - revitM2;
+
+            // Relative to Revit's figure, which is the one being checked against.
+            double relative = revitM2 > 0 ? Math.Abs(deviation) / revitM2 : 0;
+            deviations.Add(relative);
+
+            string voids = atRevit.InnerLoopCount > 0
+                ? string.Create(CultureInfo.InvariantCulture, $"   voids {atRevit.InnerLoopCount}")
+                : string.Empty;
+
+            rows.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"  [{circuit.Index,-3}] revit {revitM2,9:0.###} m2   ours {oursM2,9:0.###} m2   diff {deviation,9:0.000000} m2 ({relative:P4}){voids}"));
+        }
+
+        if (deviations.Count > 0)
+        {
+            report.Item("Circuits compared", deviations.Count);
+            report.Item("Largest relative difference", deviations.Max().ToString("P6", CultureInfo.InvariantCulture));
+            report.Item("Mean relative difference", deviations.Average().ToString("P6", CultureInfo.InvariantCulture));
+        }
+
+        report.Blank();
+        foreach (string row in rows)
+        {
+            report.Line(row);
+        }
+
+        report.Blank();
+        report.Line("  Loop classification, at Revit's tolerance:");
+        report.Line("  Which loop the region picked as the outer one, and which way each was drawn.");
+        report.Blank();
+
+        var windingCensus = new Dictionary<string, long>(StringComparer.Ordinal);
+        int outerWasFirst = 0;
+        int multiLoop = 0;
+
+        foreach (CircuitInfo circuit in ok)
+        {
+            RegionInfo atRevit = circuit.AtRevitTolerance!;
+
+            if (atRevit.OuterLoopIndex == 0)
+            {
+                outerWasFirst++;
+            }
+
+            if (atRevit.LoopWindings.Count > 1)
+            {
+                multiLoop++;
+                string outer = atRevit.OuterLoopIndex?.ToString(CultureInfo.InvariantCulture) ?? "none";
+                report.Line(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"  [{circuit.Index,-3}] loops {atRevit.LoopWindings.Count}   outer is loop {outer}   windings: {string.Join(", ", atRevit.LoopWindings)}"));
+            }
+
+            for (int i = 0; i < atRevit.LoopWindings.Count; i++)
+            {
+                string key = i == atRevit.OuterLoopIndex
+                    ? $"outer {atRevit.LoopWindings[i]}"
+                    : $"inner {atRevit.LoopWindings[i]}";
+                windingCensus.TryGetValue(key, out long current);
+                windingCensus[key] = current + 1;
+            }
+        }
+
+        report.Blank();
+        report.Item(
+            "Regions where the outer loop was also the first",
+            string.Create(CultureInfo.InvariantCulture, $"{outerWasFirst} of {ok.Count}"));
+        report.Item("Regions with more than one loop", multiLoop);
+        report.Blank();
+        report.Census(windingCensus);
+    }
+
+    /// <summary>
     /// Examines the spaces the entrance rule would reject.
     ///
     /// The brief's initial rule is that a space qualifies only if it has a
@@ -546,13 +739,16 @@ public static class PlanCircuitProbe
         {
             double squareMetres = UnitUtils.ConvertFromInternalUnits(circuit.CircuitAreaFeet2, UnitTypeId.SquareMeters);
             report.Blank();
-            report.Line($"[{circuit.Index}]  {squareMetres:0.##} m2   loops {circuit.Loops.Count}   " +
-                        $"bounding elements {circuit.BoundaryElements.Count}");
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"[{circuit.Index}]  {squareMetres:0.##} m2   loops {circuit.Loops.Count}   bounding elements {circuit.BoundaryElements.Count}"));
 
             foreach (BoundaryElementInfo element in circuit.BoundaryElements)
             {
                 string kind = element.WallKind == "-" ? string.Empty : $"  kind {element.WallKind}";
-                report.Line($"      {element.CategoryName,-22} id {element.ElementId,-10} \"{element.TypeName}\"{kind}");
+                report.Line(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"      {element.CategoryName,-22} id {element.ElementId,-10} \"{element.TypeName}\"{kind}"));
 
                 foreach (string insert in element.Inserts)
                 {
@@ -589,8 +785,10 @@ public static class PlanCircuitProbe
         {
             double circuitM2 = UnitUtils.ConvertFromInternalUnits(circuit.CircuitAreaFeet2, UnitTypeId.SquareMeters);
             report.Blank();
-            report.Line($"[{circuit.Index}]  circuit area {circuitM2:0.##} m2   sides {circuit.SideNum}   " +
-                        $"{(circuit.WasRoomLocated ? "roomed" : "UNROOMED")}");
+            string roomed = circuit.WasRoomLocated ? "roomed" : "UNROOMED";
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"[{circuit.Index}]  circuit area {circuitM2:0.##} m2   sides {circuit.SideNum}   {roomed}"));
 
             if (circuit.Failure is not null)
             {
@@ -600,29 +798,37 @@ public static class PlanCircuitProbe
 
             double roomM2 = UnitUtils.ConvertFromInternalUnits(circuit.RoomAreaFeet2, UnitTypeId.SquareMeters);
             string source = circuit.RoomWasTemporary ? "temporary room" : "existing room";
-            report.Line($"      {source}: {circuit.RoomLabel}   area {roomM2:0.##} m2   perimeter {circuit.PerimeterFeet:0.##} ft");
-            report.Line($"      loops {circuit.Loops.Count}   doors on boundary {circuit.DoorsOnBoundary.Count}" +
-                        $"   (hosted by bounding walls: {circuit.DoorsHostedByBoundaryWalls})");
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"      {source}: {circuit.RoomLabel}   area {roomM2:0.##} m2   perimeter {circuit.PerimeterFeet:0.##} ft"));
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"      loops {circuit.Loops.Count}   doors on boundary {circuit.DoorsOnBoundary.Count}   (hosted by bounding walls: {circuit.DoorsHostedByBoundaryWalls})"));
 
             for (int i = 0; i < circuit.Loops.Count; i++)
             {
                 LoopInfo loop = circuit.Loops[i];
+                double gapMillimetres =
+                    UnitUtils.ConvertFromInternalUnits(loop.LargestGapFeet, UnitTypeId.Millimeters);
                 string closure = loop.IsClosed
                     ? "closed"
-                    : $"OPEN by {loop.LargestGapFeet:0.00000000} ft " +
-                      $"({UnitUtils.ConvertFromInternalUnits(loop.LargestGapFeet, UnitTypeId.Millimeters):0.0000} mm)";
-                report.Line($"        loop {i}: {loop.SegmentCount} segments, {closure}");
+                    : string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"OPEN by {loop.LargestGapFeet:0.00000000} ft ({gapMillimetres:0.0000} mm)");
+                report.Line(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"        loop {i}: {loop.SegmentCount} segments, {closure}"));
 
                 var categories = loop.Segments
                     .GroupBy(s => s.CategoryName, StringComparer.Ordinal)
                     .OrderBy(g => g.Key, StringComparer.Ordinal)
-                    .Select(g => $"{g.Key} x{g.Count()}");
+                    .Select(g => string.Create(CultureInfo.InvariantCulture, $"{g.Key} x{g.Count()}"));
                 report.Line($"          bounded by: {string.Join(", ", categories)}");
 
                 var curveTypes = loop.Segments
                     .GroupBy(s => s.CurveType, StringComparer.Ordinal)
                     .OrderBy(g => g.Key, StringComparer.Ordinal)
-                    .Select(g => $"{g.Key} x{g.Count()}");
+                    .Select(g => string.Create(CultureInfo.InvariantCulture, $"{g.Key} x{g.Count()}"));
                 report.Line($"          curve types: {string.Join(", ", curveTypes)}");
             }
 
@@ -670,8 +876,9 @@ public static class PlanCircuitProbe
                 foreach (SegmentInfo segment in circuit.Loops[i].Segments.Where(s => s.CategoryName == "(none)"))
                 {
                     double millimetres = UnitUtils.ConvertFromInternalUnits(segment.LengthFeet, UnitTypeId.Millimeters);
-                    rows.Add($"  circuit {circuit.Index,-4} loop {i}   {segment.CurveType,-6} " +
-                             $"length {segment.LengthFeet,8:0.###} ft ({millimetres:0.#} mm)   elementId {segment.ElementId}");
+                    rows.Add(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"  circuit {circuit.Index,-4} loop {i}   {segment.CurveType,-6} length {segment.LengthFeet,8:0.###} ft ({millimetres:0.#} mm)   elementId {segment.ElementId}"));
                 }
             }
         }
