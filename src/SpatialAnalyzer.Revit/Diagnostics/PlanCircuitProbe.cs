@@ -1,7 +1,10 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Architecture;
 using SpatialAnalyzer.Core.Diagnostics;
+using SpatialAnalyzer.Revit.Boundaries;
 using SpatialAnalyzer.Revit.Context;
+using CoreBoundaryLoop = SpatialAnalyzer.Core.Geometry.BoundaryLoop;
+using CoreBoundarySource = SpatialAnalyzer.Core.Geometry.BoundarySource;
 
 namespace SpatialAnalyzer.Revit.Diagnostics;
 
@@ -233,15 +236,23 @@ public static class PlanCircuitProbe
                 document.Regenerate();
             }
 
-            IList<IList<BoundarySegment>> loops = room.GetBoundarySegments(options);
+            // Reported from the extractor's plain data rather than from Revit
+            // directly, so that this report measures what the rest of the
+            // application will actually see. If the copy lost anything, these
+            // numbers would drift from the previous run's.
+            IReadOnlyList<CoreBoundaryLoop> loops = BoundaryExtractor.Extract(room, options);
 
-            var loopInfos = new List<LoopInfo>();
-            var curvesByBoundaryElement = new Dictionary<long, List<Curve>>();
-
-            foreach (IList<BoundarySegment> loop in loops)
+            var loopInfos = new List<LoopInfo>(loops.Count);
+            foreach (CoreBoundaryLoop loop in loops)
             {
-                loopInfos.Add(DescribeLoop(document, loop, curvesByBoundaryElement));
+                loopInfos.Add(DescribeLoop(document, loop));
             }
+
+            // The door test still needs Revit curves, which can project a
+            // point. Collected independently on purpose: two separate readings
+            // of the same boundary make the comparison above mean something.
+            Dictionary<long, List<Curve>> curvesByBoundaryElement =
+                CollectCurvesByElement(room, options);
 
             (List<string> onBoundary, int hostedTotal) =
                 FindDoorsOnBoundary(document, curvesByBoundaryElement, doorsByHost);
@@ -361,56 +372,69 @@ public static class PlanCircuitProbe
         return results;
     }
 
-    private static LoopInfo DescribeLoop(
-        Document document,
-        IList<BoundarySegment> loop,
-        Dictionary<long, List<Curve>> curvesByBoundaryElement)
+    private static LoopInfo DescribeLoop(Document document, CoreBoundaryLoop loop)
     {
-        var segments = new List<SegmentInfo>();
-        var curves = new List<Curve>();
+        var segments = new List<SegmentInfo>(loop.Segments.Count);
 
-        foreach (BoundarySegment segment in loop)
+        foreach (var segment in loop.Segments)
         {
-            Curve curve = segment.GetCurve();
-            curves.Add(curve);
-
-            // A boundary produced by a linked model reports the link instance
-            // in ElementId and the element inside the link in LinkElementId.
-            // Recording which is present keeps a link instance from being
-            // mistaken for the wall that actually bounds the space.
-            bool fromLink = segment.LinkElementId != ElementId.InvalidElementId;
-            long elementId = segment.ElementId.Value;
-
-            string categoryName = "(none)";
-            if (fromLink)
+            string categoryName = segment.Reference.Source switch
             {
-                categoryName = "(linked)";
-            }
-            else if (elementId != ElementId.InvalidElementId.Value)
-            {
-                Element? element = document.GetElement(segment.ElementId);
-                categoryName = element?.Category?.Name ?? "(no category)";
-
-                if (!curvesByBoundaryElement.TryGetValue(elementId, out List<Curve>? list))
-                {
-                    list = new List<Curve>();
-                    curvesByBoundaryElement[elementId] = list;
-                }
-
-                list.Add(curve);
-            }
+                CoreBoundarySource.Linked => "(linked)",
+                CoreBoundarySource.None => "(none)",
+                _ => document.GetElement(new ElementId(segment.Reference.ElementId.Value))?.Category?.Name
+                     ?? "(no category)",
+            };
 
             segments.Add(new SegmentInfo(
-                elementId,
+                segment.Reference.ElementId.Value,
                 categoryName,
-                fromLink,
-                curve.GetType().Name,
-                curve.Length));
+                segment.Reference.Source == CoreBoundarySource.Linked,
+                segment.Curve.Kind.ToString(),
+                segment.Curve.LengthInternalFeet));
         }
 
-        (bool closed, double largestGap) = MeasureClosure(curves);
+        // Closure is asked of the loop itself, with the tolerance stated here.
+        // The loop measures and reports; it offers nothing that would close it.
+        return new LoopInfo(
+            segments.Count,
+            loop.IsClosedWithin(CoincidentPointToleranceFeet),
+            loop.LargestGapInternalFeet,
+            segments);
+    }
 
-        return new LoopInfo(segments.Count, closed, largestGap, segments);
+    /// <summary>
+    /// Groups the room's boundary curves by the element that produced them,
+    /// for the door projection test, which needs Revit's own curve arithmetic.
+    /// </summary>
+    private static Dictionary<long, List<Curve>> CollectCurvesByElement(
+        Room room,
+        SpatialElementBoundaryOptions options)
+    {
+        var byElement = new Dictionary<long, List<Curve>>();
+
+        foreach (IList<BoundarySegment> loop in room.GetBoundarySegments(options))
+        {
+            foreach (BoundarySegment segment in loop)
+            {
+                if (segment.LinkElementId != ElementId.InvalidElementId ||
+                    segment.ElementId == ElementId.InvalidElementId)
+                {
+                    continue;
+                }
+
+                long elementId = segment.ElementId.Value;
+                if (!byElement.TryGetValue(elementId, out List<Curve>? curves))
+                {
+                    curves = new List<Curve>();
+                    byElement[elementId] = curves;
+                }
+
+                curves.Add(segment.GetCurve());
+            }
+        }
+
+        return byElement;
     }
 
     /// <summary>
@@ -472,30 +496,6 @@ public static class PlanCircuitProbe
         }
 
         return (onBoundary.OrderBy(d => d, StringComparer.Ordinal).ToList(), hostedTotal);
-    }
-
-    /// <summary>
-    /// Measures whether a loop closes, and by how much it misses.
-    ///
-    /// The gap is reported, never corrected. A discontinuity is evidence about
-    /// the model and has to be understood on its own terms.
-    /// </summary>
-    private static (bool Closed, double LargestGap) MeasureClosure(List<Curve> curves)
-    {
-        if (curves.Count == 0)
-        {
-            return (false, 0);
-        }
-
-        double largest = 0;
-        for (int i = 0; i < curves.Count; i++)
-        {
-            XYZ end = curves[i].GetEndPoint(1);
-            XYZ nextStart = curves[(i + 1) % curves.Count].GetEndPoint(0);
-            largest = Math.Max(largest, end.DistanceTo(nextStart));
-        }
-
-        return (largest <= CoincidentPointToleranceFeet, largest);
     }
 
     private static void WriteSummary(DiagnosticReport report, List<CircuitInfo> circuits)
