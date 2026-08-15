@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace SpatialAnalyzer.Core.Geometry;
 
 /// <summary>
@@ -90,5 +92,7 @@ public sealed record BoundaryCurve
     public static BoundaryCurve Straight(Point2D start, Point2D end) =>
         new(BoundaryCurveKind.Line, start, end, start.DistanceTo(end), new[] { start, end });
 
-    public override string ToString() => $"{Kind} {Start} -> {End} ({LengthInternalFeet:0.####} ft)";
+    public override string ToString() => string.Create(
+        CultureInfo.InvariantCulture,
+        $"{Kind} {Start} -> {End} ({LengthInternalFeet:0.####} ft)");
 }

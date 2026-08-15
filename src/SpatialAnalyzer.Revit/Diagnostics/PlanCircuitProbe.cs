@@ -429,7 +429,9 @@ public static class PlanCircuitProbe
                         continue;
                     }
 
-                    inserts.Add($"{insert.Category?.Name ?? "(no category)"} id {insertId.Value} \"{insert.Name}\"");
+                    inserts.Add(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"{insert.Category?.Name ?? "(no category)"} id {insertId.Value} \"{insert.Name}\""));
                 }
             }
 
@@ -560,7 +562,9 @@ public static class PlanCircuitProbe
                     IntersectionResult? projection = curve.Project(flattened);
                     if (projection is not null && projection.Distance <= allowance)
                     {
-                        onBoundary.Add($"id {door.Id.Value} host {boundaryElementId} at {projection.Distance:0.###} ft");
+                        onBoundary.Add(string.Create(
+                            CultureInfo.InvariantCulture,
+                            $"id {door.Id.Value} host {boundaryElementId} at {projection.Distance:0.###} ft"));
                         break;
                     }
                 }
@@ -735,13 +739,16 @@ public static class PlanCircuitProbe
         {
             double squareMetres = UnitUtils.ConvertFromInternalUnits(circuit.CircuitAreaFeet2, UnitTypeId.SquareMeters);
             report.Blank();
-            report.Line($"[{circuit.Index}]  {squareMetres:0.##} m2   loops {circuit.Loops.Count}   " +
-                        $"bounding elements {circuit.BoundaryElements.Count}");
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"[{circuit.Index}]  {squareMetres:0.##} m2   loops {circuit.Loops.Count}   bounding elements {circuit.BoundaryElements.Count}"));
 
             foreach (BoundaryElementInfo element in circuit.BoundaryElements)
             {
                 string kind = element.WallKind == "-" ? string.Empty : $"  kind {element.WallKind}";
-                report.Line($"      {element.CategoryName,-22} id {element.ElementId,-10} \"{element.TypeName}\"{kind}");
+                report.Line(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"      {element.CategoryName,-22} id {element.ElementId,-10} \"{element.TypeName}\"{kind}"));
 
                 foreach (string insert in element.Inserts)
                 {
@@ -778,8 +785,10 @@ public static class PlanCircuitProbe
         {
             double circuitM2 = UnitUtils.ConvertFromInternalUnits(circuit.CircuitAreaFeet2, UnitTypeId.SquareMeters);
             report.Blank();
-            report.Line($"[{circuit.Index}]  circuit area {circuitM2:0.##} m2   sides {circuit.SideNum}   " +
-                        $"{(circuit.WasRoomLocated ? "roomed" : "UNROOMED")}");
+            string roomed = circuit.WasRoomLocated ? "roomed" : "UNROOMED";
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"[{circuit.Index}]  circuit area {circuitM2:0.##} m2   sides {circuit.SideNum}   {roomed}"));
 
             if (circuit.Failure is not null)
             {
@@ -789,29 +798,37 @@ public static class PlanCircuitProbe
 
             double roomM2 = UnitUtils.ConvertFromInternalUnits(circuit.RoomAreaFeet2, UnitTypeId.SquareMeters);
             string source = circuit.RoomWasTemporary ? "temporary room" : "existing room";
-            report.Line($"      {source}: {circuit.RoomLabel}   area {roomM2:0.##} m2   perimeter {circuit.PerimeterFeet:0.##} ft");
-            report.Line($"      loops {circuit.Loops.Count}   doors on boundary {circuit.DoorsOnBoundary.Count}" +
-                        $"   (hosted by bounding walls: {circuit.DoorsHostedByBoundaryWalls})");
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"      {source}: {circuit.RoomLabel}   area {roomM2:0.##} m2   perimeter {circuit.PerimeterFeet:0.##} ft"));
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"      loops {circuit.Loops.Count}   doors on boundary {circuit.DoorsOnBoundary.Count}   (hosted by bounding walls: {circuit.DoorsHostedByBoundaryWalls})"));
 
             for (int i = 0; i < circuit.Loops.Count; i++)
             {
                 LoopInfo loop = circuit.Loops[i];
+                double gapMillimetres =
+                    UnitUtils.ConvertFromInternalUnits(loop.LargestGapFeet, UnitTypeId.Millimeters);
                 string closure = loop.IsClosed
                     ? "closed"
-                    : $"OPEN by {loop.LargestGapFeet:0.00000000} ft " +
-                      $"({UnitUtils.ConvertFromInternalUnits(loop.LargestGapFeet, UnitTypeId.Millimeters):0.0000} mm)";
-                report.Line($"        loop {i}: {loop.SegmentCount} segments, {closure}");
+                    : string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"OPEN by {loop.LargestGapFeet:0.00000000} ft ({gapMillimetres:0.0000} mm)");
+                report.Line(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"        loop {i}: {loop.SegmentCount} segments, {closure}"));
 
                 var categories = loop.Segments
                     .GroupBy(s => s.CategoryName, StringComparer.Ordinal)
                     .OrderBy(g => g.Key, StringComparer.Ordinal)
-                    .Select(g => $"{g.Key} x{g.Count()}");
+                    .Select(g => string.Create(CultureInfo.InvariantCulture, $"{g.Key} x{g.Count()}"));
                 report.Line($"          bounded by: {string.Join(", ", categories)}");
 
                 var curveTypes = loop.Segments
                     .GroupBy(s => s.CurveType, StringComparer.Ordinal)
                     .OrderBy(g => g.Key, StringComparer.Ordinal)
-                    .Select(g => $"{g.Key} x{g.Count()}");
+                    .Select(g => string.Create(CultureInfo.InvariantCulture, $"{g.Key} x{g.Count()}"));
                 report.Line($"          curve types: {string.Join(", ", curveTypes)}");
             }
 
@@ -859,8 +876,9 @@ public static class PlanCircuitProbe
                 foreach (SegmentInfo segment in circuit.Loops[i].Segments.Where(s => s.CategoryName == "(none)"))
                 {
                     double millimetres = UnitUtils.ConvertFromInternalUnits(segment.LengthFeet, UnitTypeId.Millimeters);
-                    rows.Add($"  circuit {circuit.Index,-4} loop {i}   {segment.CurveType,-6} " +
-                             $"length {segment.LengthFeet,8:0.###} ft ({millimetres:0.#} mm)   elementId {segment.ElementId}");
+                    rows.Add(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"  circuit {circuit.Index,-4} loop {i}   {segment.CurveType,-6} length {segment.LengthFeet,8:0.###} ft ({millimetres:0.#} mm)   elementId {segment.ElementId}"));
                 }
             }
         }
