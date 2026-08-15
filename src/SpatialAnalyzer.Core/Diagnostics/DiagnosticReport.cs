@@ -45,9 +45,18 @@ public sealed class DiagnosticReport
         _lines.Add(new string('-', name.Length));
     }
 
+    /// <summary>
+    /// Writes a label and its value, aligned to a column.
+    ///
+    /// A label at or past that column keeps a single space instead, because
+    /// PadRight does nothing once the label is already wide enough and the two
+    /// would run together - "Enclosed at Revit's ShortCurveTolerance30" reads as
+    /// a different number, and the report is meant to be read.
+    /// </summary>
     public void Item(string label, string? value)
     {
-        _lines.Add($"{label.PadRight(LabelWidth)}{value ?? string.Empty}");
+        string aligned = label.Length < LabelWidth ? label.PadRight(LabelWidth) : label + " ";
+        _lines.Add($"{aligned}{value ?? string.Empty}");
     }
 
     /// <summary>
