@@ -1,5 +1,6 @@
 using System.Reflection;
 using Autodesk.Revit.UI;
+using SpatialAnalyzer.Revit.Analysis;
 using SpatialAnalyzer.Revit.Commands;
 
 namespace SpatialAnalyzer.Revit.App;
@@ -28,6 +29,10 @@ public class SpatialAnalyzerApplication : IExternalApplication
             AddOutlineRegionsButton(panel);
             AddQualifyRegionsButton(panel);
             AddAnalyzeSelectionButton(panel);
+
+            // Listens for changes so a kept analysis is discarded the moment the
+            // model it describes moves.
+            PlanAnalysisCache.Attach(application.ControlledApplication);
         }
         catch (Exception exception)
         {
@@ -41,7 +46,20 @@ public class SpatialAnalyzerApplication : IExternalApplication
         return Result.Succeeded;
     }
 
-    public Result OnShutdown(UIControlledApplication application) => Result.Succeeded;
+    public Result OnShutdown(UIControlledApplication application)
+    {
+        try
+        {
+            PlanAnalysisCache.Detach(application.ControlledApplication);
+        }
+        catch (Exception)
+        {
+            // Revit is closing. An add-in that throws on the way out achieves
+            // nothing except an error message the user cannot act on.
+        }
+
+        return Result.Succeeded;
+    }
 
     private static RibbonPanel CreatePanel(UIControlledApplication application)
     {

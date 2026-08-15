@@ -6,6 +6,7 @@ using Autodesk.Revit.UI.Selection;
 using SpatialAnalyzer.Core.Domain;
 using SpatialAnalyzer.Core.Geometry;
 using SpatialAnalyzer.Core.Spatial;
+using SpatialAnalyzer.Revit.Analysis;
 using SpatialAnalyzer.Revit.Context;
 using SpatialAnalyzer.Revit.Diagnostics;
 using SpatialAnalyzer.Revit.Elements;
@@ -64,33 +65,26 @@ public class AnalyzeSelectionCommand : IExternalCommand
         ElementDescriptor descriptor = ElementDescriptorFactory.Describe(element);
         Point2D? location = ElementPlanPoint.RepresentativeOf(element);
 
-        RegionQualification.Reading reading;
-        try
+        // Reuses the analysis if one is held for this view and phase and nothing
+        // has changed since. Any committed edit discards it, so a kept answer
+        // can never outlive the model it describes.
+        PlanAnalysis.Result? analysis = PlanAnalysisCache.TryGet(context);
+        bool reused = analysis is not null;
+
+        if (analysis is null)
         {
-            reading = RegionQualification.Read(context);
+            try
+            {
+                analysis = PlanAnalysis.From(context, RegionQualification.Read(context));
+            }
+            catch (Exception exception)
+            {
+                message = $"The regions could not be read: {exception.GetType().Name}: {exception.Message}";
+                return Result.Failed;
+            }
+
+            PlanAnalysisCache.Store(context, analysis);
         }
-        catch (Exception exception)
-        {
-            message = $"The regions could not be read: {exception.GetType().Name}: {exception.Message}";
-            return Result.Failed;
-        }
-
-        var qualifier = new RoomQualifier(EntranceRule.Default);
-
-        var outcomes = reading.Regions
-            .Select(r => (Reading: r, Outcome: qualifier.Qualify(r.Region, r.Features.Select(f => f.Feature).ToList())))
-            .ToList();
-
-        List<GranularRoom> rooms = outcomes
-            .Where(o => o.Outcome.IsQualified)
-            .Select(o => o.Outcome.Room!)
-            .ToList();
-
-        var adjacency = DoorAdjacencyIndex.Build(
-            reading.Regions.ToDictionary(
-                r => r.Region.Id,
-                r => (IReadOnlyList<BoundaryFeature>)r.Features.Select(f => f.Feature).ToList()),
-            EntranceRule.Default);
 
         var lines = new List<string>
         {
@@ -108,16 +102,18 @@ public class AnalyzeSelectionCommand : IExternalCommand
             return Result.Succeeded;
         }
 
-        var resolver = new RoomMembershipResolver(rooms, adjacency);
-        RoomMembership membership = resolver.Resolve(descriptor, location.Value, reading.ClosureToleranceFeet);
+        RoomMembership membership = analysis.Index.Resolve(descriptor, location.Value);
 
         lines.AddRange(Describe(
             membership,
-            resolver.RoomsBoundedBy(descriptor.Id),
-            outcomes,
-            location.Value,
-            reading,
-            rooms.Count));
+            analysis.Index.RoomsBoundedBy(descriptor.Id),
+            analysis,
+            location.Value));
+
+        lines.Add(string.Empty);
+        lines.Add(reused
+            ? string.Create(CultureInfo.InvariantCulture, $"Analysis reused ({PlanAnalysisCache.Reuses} time(s); built {PlanAnalysisCache.Builds}).")
+            : string.Create(CultureInfo.InvariantCulture, $"Analysis rebuilt: {PlanAnalysisCache.LastMissReason}. (built {PlanAnalysisCache.Builds}, reused {PlanAnalysisCache.Reuses})"));
 
         Show(lines);
         return Result.Succeeded;
@@ -126,11 +122,12 @@ public class AnalyzeSelectionCommand : IExternalCommand
     private static IEnumerable<string> Describe(
         RoomMembership membership,
         IReadOnlyList<RegionId> bounds,
-        List<(RegionQualification.RegionReading Reading, QualificationOutcome Outcome)> outcomes,
-        Point2D location,
-        RegionQualification.Reading reading,
-        int roomCount)
+        PlanAnalysis.Result analysis,
+        Point2D location)
     {
+        IReadOnlyList<(RegionQualification.RegionReading Reading, QualificationOutcome Outcome)> outcomes =
+            analysis.Outcomes;
+        int roomCount = analysis.Index.Rooms.Count;
         string AreaOf(RegionId id)
         {
             (RegionQualification.RegionReading Reading, QualificationOutcome Outcome) match =
@@ -211,7 +208,7 @@ public class AnalyzeSelectionCommand : IExternalCommand
 
                 // The region it does fall in, and why that region is not a room,
                 // is usually the useful part of the answer.
-                foreach (string line in ExplainWhyNot(outcomes, location, reading))
+                foreach (string line in ExplainWhyNot(outcomes, location, analysis.Reading))
                 {
                     yield return line;
                 }
@@ -225,7 +222,7 @@ public class AnalyzeSelectionCommand : IExternalCommand
     }
 
     private static IEnumerable<string> ExplainWhyNot(
-        List<(RegionQualification.RegionReading Reading, QualificationOutcome Outcome)> outcomes,
+        IReadOnlyList<(RegionQualification.RegionReading Reading, QualificationOutcome Outcome)> outcomes,
         Point2D location,
         RegionQualification.Reading reading)
     {
