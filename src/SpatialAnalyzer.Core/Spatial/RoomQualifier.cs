@@ -1,4 +1,5 @@
 using System.Globalization;
+using SpatialAnalyzer.Core.Domain;
 
 namespace SpatialAnalyzer.Core.Spatial;
 
@@ -101,9 +102,16 @@ public sealed class RoomQualifier
     /// wall lends its doors to every space it touches, and taking that at face
     /// value once credited a four square metre cupboard with eight of them.
     /// </param>
+    /// <param name="confirmedEntrances">
+    /// Elements a person has said are ways in, having been shown what is on the
+    /// boundary. Only elements already established to lie on this region's
+    /// boundary can be confirmed: the answer settles which of the real
+    /// candidates is the entrance, and cannot introduce one that is not there.
+    /// </param>
     public QualificationOutcome Qualify(
         CandidateRegion region,
-        IReadOnlyList<BoundaryFeature> boundaryFeatures)
+        IReadOnlyList<BoundaryFeature> boundaryFeatures,
+        IReadOnlySet<RevitElementId>? confirmedEntrances = null)
     {
         ArgumentNullException.ThrowIfNull(region);
         ArgumentNullException.ThrowIfNull(boundaryFeatures);
@@ -123,7 +131,19 @@ public sealed class RoomQualifier
                     $"Boundary open by {region.LargestGapInternalFeet:0.######} ft at a tolerance of {region.ClosureToleranceInternalFeet:0.######} ft, across {region.OpenLoops.Count} of {region.Loops.Count} loop(s)."));
         }
 
-        IReadOnlyList<BoundaryFeature> entrances = EntranceRule.EntrancesAmong(boundaryFeatures);
+        var entrances = new List<RoomEntrance>();
+
+        foreach (BoundaryFeature feature in boundaryFeatures)
+        {
+            if (EntranceRule.Admits(feature.Kind))
+            {
+                entrances.Add(RoomEntrance.ByRule(feature));
+            }
+            else if (confirmedEntrances is not null && confirmedEntrances.Contains(feature.Element.Id))
+            {
+                entrances.Add(RoomEntrance.ByOperator(feature));
+            }
+        }
 
         if (entrances.Count == 0)
         {
@@ -133,11 +153,38 @@ public sealed class RoomQualifier
                 DescribeWhatWasFoundInstead(boundaryFeatures));
         }
 
-        var room = new GranularRoom(region, entrances.Select(e => e.Element).ToList());
+        var room = new GranularRoom(region, entrances);
 
-        return QualificationOutcome.Qualified(
-            room,
-            string.Create(CultureInfo.InvariantCulture, $"Entered through {DescribeKinds(entrances)}."));
+        string byRule = DescribeKinds(entrances.Where(e => e.Authority == EntranceAuthority.Rule).ToList());
+        var confirmed = entrances.Where(e => e.Authority == EntranceAuthority.OperatorConfirmed).ToList();
+
+        string explanation = confirmed.Count == 0
+            ? string.Create(CultureInfo.InvariantCulture, $"Entered through {byRule}.")
+            : byRule.Length == 0
+                ? string.Create(CultureInfo.InvariantCulture, $"Entered through {DescribeKinds(confirmed)}, confirmed by the operator.")
+                : string.Create(CultureInfo.InvariantCulture, $"Entered through {byRule}, and {DescribeKinds(confirmed)} confirmed by the operator.");
+
+        return QualificationOutcome.Qualified(room, explanation);
+    }
+
+    /// <summary>
+    /// Whether this region is one a person should be asked about.
+    ///
+    /// A region with nothing at all on its boundary cannot be resolved by
+    /// anyone: there is nothing to point at. A region the rule already accepts
+    /// needs no help. What is left is the case worth asking about - enclosed,
+    /// with something on its boundary that the rule will not call a way in - and
+    /// a shopfront of glazed curtain walling with no door modelled in it is
+    /// exactly that.
+    /// </summary>
+    public bool NeedsAJudgement(CandidateRegion region, IReadOnlyList<BoundaryFeature> boundaryFeatures)
+    {
+        ArgumentNullException.ThrowIfNull(region);
+        ArgumentNullException.ThrowIfNull(boundaryFeatures);
+
+        return region.IsEnclosed
+            && boundaryFeatures.Count > 0
+            && !boundaryFeatures.Any(f => EntranceRule.Admits(f.Kind));
     }
 
     /// <summary>
@@ -159,10 +206,16 @@ public sealed class RoomQualifier
             $"Nothing on this boundary admits a person. Found {DescribeKinds(boundaryFeatures)}.");
     }
 
-    private static string DescribeKinds(IReadOnlyList<BoundaryFeature> features)
+    private static string DescribeKinds(IReadOnlyList<BoundaryFeature> features) =>
+        Counted(features.Select(f => f.Kind));
+
+    private static string DescribeKinds(IReadOnlyList<RoomEntrance> entrances) =>
+        Counted(entrances.Select(e => e.Kind));
+
+    private static string Counted(IEnumerable<BoundaryFeatureKind> kinds)
     {
-        var counted = features
-            .GroupBy(f => f.Kind)
+        var counted = kinds
+            .GroupBy(k => k)
             .OrderBy(g => g.Key)
             .Select(g => string.Create(CultureInfo.InvariantCulture, $"{g.Count()} x {g.Key}"));
 

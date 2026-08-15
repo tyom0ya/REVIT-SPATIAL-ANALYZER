@@ -35,6 +35,9 @@ public class GranularRoomTests
     private static ElementDescriptor ADoor() =>
         ElementDescriptor.Create(new RevitElementId(555), "Doors", "Single-Flush", "915 x 2134mm");
 
+    private static RoomEntrance ADoorEntrance() =>
+        new(ADoor(), BoundaryFeatureKind.Door, EntranceAuthority.Rule);
+
     private static CandidateRegion EnclosedRegion(int ordinal = 0) =>
         new(new RegionId(ordinal), new[] { Rect(0, 0, 10, 8) }, Tolerance);
 
@@ -69,7 +72,7 @@ public class GranularRoomTests
     public void ARegionOpenToTheNextSpaceCannotBecomeARoom()
     {
         ArgumentException error = Assert.Throws<ArgumentException>(
-            () => new GranularRoom(OpenRegion(), new[] { ADoor() }));
+            () => new GranularRoom(OpenRegion(), new[] { ADoorEntrance() }));
 
         Assert.Contains("part of the space beyond that opening", error.Message, StringComparison.Ordinal);
     }
@@ -78,7 +81,7 @@ public class GranularRoomTests
     public void TheOpeningThatDisqualifiedARegionIsNamedAtItsRealSize()
     {
         ArgumentException error = Assert.Throws<ArgumentException>(
-            () => new GranularRoom(OpenRegion(), new[] { ADoor() }));
+            () => new GranularRoom(OpenRegion(), new[] { ADoorEntrance() }));
 
         Assert.Contains("open by 3", error.Message, StringComparison.Ordinal);
     }
@@ -91,13 +94,13 @@ public class GranularRoomTests
     public void ARoomMustNameWhatQualifiedIt()
     {
         Assert.Throws<ArgumentException>(
-            () => new GranularRoom(EnclosedRegion(), Array.Empty<ElementDescriptor>()));
+            () => new GranularRoom(EnclosedRegion(), Array.Empty<RoomEntrance>()));
     }
 
     [Fact]
     public void AnEnclosedRegionWithAnEntranceIsARoom()
     {
-        var room = new GranularRoom(EnclosedRegion(), new[] { ADoor() });
+        var room = new GranularRoom(EnclosedRegion(), new[] { ADoorEntrance() });
 
         Assert.Equal(80.0, room.Area.InternalSquareFeet, precision: 9);
         Assert.Single(room.Entrances);
@@ -108,7 +111,7 @@ public class GranularRoomTests
     {
         var region = new CandidateRegion(new RegionId(4), new[] { Rect(0, 0, 10, 8), Rect(3, 3, 2, 2) }, Tolerance);
 
-        var room = new GranularRoom(region, new[] { ADoor() });
+        var room = new GranularRoom(region, new[] { ADoorEntrance() });
 
         Assert.Equal(76.0, room.Area.InternalSquareFeet, precision: 9);
     }
@@ -122,7 +125,7 @@ public class GranularRoomTests
     {
         CandidateRegion region = EnclosedRegion(ordinal: 17);
 
-        var room = new GranularRoom(region, new[] { ADoor() });
+        var room = new GranularRoom(region, new[] { ADoorEntrance() });
 
         Assert.Equal(new RegionId(17), room.Id);
         Assert.Same(region, room.Region);
@@ -131,7 +134,7 @@ public class GranularRoomTests
     [Fact]
     public void ARoomExposesTheElementsThatEncloseIt()
     {
-        var room = new GranularRoom(EnclosedRegion(), new[] { ADoor() });
+        var room = new GranularRoom(EnclosedRegion(), new[] { ADoorEntrance() });
 
         Assert.Equal(4, room.BoundingReferences.Count);
         Assert.All(room.BoundingReferences, r => Assert.True(r.IsAttributed));
@@ -145,9 +148,31 @@ public class GranularRoomTests
     [Fact]
     public void ARoomsAreaIsAlwaysMeasured()
     {
-        var room = new GranularRoom(EnclosedRegion(), new[] { ADoor() });
+        var room = new GranularRoom(EnclosedRegion(), new[] { ADoorEntrance() });
 
         Assert.True(room.Area.IsMeasured);
+    }
+
+    /// <summary>
+    /// A room that exists because someone was asked is a different kind of
+    /// claim from one the model supports on its own, and every report and
+    /// export has to be able to tell them apart.
+    /// </summary>
+    [Fact]
+    public void ARoomSaysWhetherItRestsOnSomebodysJudgement()
+    {
+        var byRule = new GranularRoom(EnclosedRegion(), new[] { ADoorEntrance() });
+
+        var byOperator = new GranularRoom(EnclosedRegion(), new[]
+        {
+            new RoomEntrance(
+                ElementDescriptor.Create(new RevitElementId(900), "Walls", "Curtain Wall", "Block 41 Storefront"),
+                BoundaryFeatureKind.EmbeddedWall,
+                EntranceAuthority.OperatorConfirmed),
+        });
+
+        Assert.False(byRule.RestsOnOperatorJudgement);
+        Assert.True(byOperator.RestsOnOperatorJudgement);
     }
 
     [Fact]

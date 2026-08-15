@@ -30,11 +30,11 @@ namespace SpatialAnalyzer.Core.Spatial;
 public sealed class GranularRoom
 {
     /// <param name="entrances">
-    /// The elements found to admit entry - doors in the ordinary case, and in
-    /// this model also walls embedded in other walls. Recorded as the evidence
-    /// for why this region is a room.
+    /// What was found to admit entry, and on whose authority. Recorded as the
+    /// evidence for why this region is a room, so a room the rule recognised on
+    /// its own can be told apart from one that exists because someone was asked.
     /// </param>
-    public GranularRoom(CandidateRegion region, IReadOnlyList<ElementDescriptor> entrances)
+    public GranularRoom(CandidateRegion region, IReadOnlyList<RoomEntrance> entrances)
     {
         ArgumentNullException.ThrowIfNull(region);
         ArgumentNullException.ThrowIfNull(entrances);
@@ -70,7 +70,15 @@ public sealed class GranularRoom
 
     public CandidateRegion Region { get; }
 
-    public IReadOnlyList<ElementDescriptor> Entrances { get; }
+    public IReadOnlyList<RoomEntrance> Entrances { get; }
+
+    /// <summary>
+    /// Whether this room needed a person to say that something on its boundary
+    /// was a way in. Surfaced here so reports and exports can never present such
+    /// a room as though the model alone supported it.
+    /// </summary>
+    public bool RestsOnOperatorJudgement =>
+        Entrances.Any(e => e.Authority == EntranceAuthority.OperatorConfirmed);
 
     /// <summary>
     /// The floor area, with interior voids already taken out. Always measured,

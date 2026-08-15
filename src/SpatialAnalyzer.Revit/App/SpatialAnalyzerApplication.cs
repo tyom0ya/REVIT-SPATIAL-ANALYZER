@@ -25,6 +25,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
             AddInspectElementButton(panel);
             AddAuditModelButton(panel);
             AddProbeCircuitsButton(panel);
+            AddQualifyRegionsButton(panel);
         }
         catch (Exception exception)
         {
@@ -142,6 +143,27 @@ public class SpatialAnalyzerApplication : IExternalApplication
             LongDescription = "Places a temporary room in every plan circuit, reads the resulting boundaries "
                             + "and doors, then rolls the change back. Asks before running. The model is left "
                             + "as it was found and the report states whether that held.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddQualifyRegionsButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerQualifyRegions",
+            text: "Qualify Regions",
+            assemblyName: assemblyPath,
+            className: typeof(QualifyRegionsCommand).FullName)
+        {
+            ToolTip = "Decide which regions are rooms, asking about the ones the rule cannot settle.",
+            LongDescription = "Applies the entrance rule to every region. Where a space is enclosed by "
+                            + "something a person might call a way in and the rule will not - a glazed "
+                            + "shopfront with no door modelled in it, say - it shows the space and asks. "
+                            + "Any answer given is recorded as the operator's rather than the model's. "
+                            + "Reads only; the model is left as it was found.",
         };
 
         panel.AddItem(buttonData);

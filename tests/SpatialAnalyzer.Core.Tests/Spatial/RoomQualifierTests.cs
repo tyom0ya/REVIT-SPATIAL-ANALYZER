@@ -225,6 +225,113 @@ public class RoomQualifierTests
             () => Qualifier().Qualify(region, new[] { Feature(BoundaryFeatureKind.Door, "Doors") }));
     }
 
+    /// <summary>
+    /// The case this exists for: a shopfront of glazed curtain walling with no
+    /// door modelled in it. The rule will not call that a way in, and loosening
+    /// it until this space qualifies would admit every glazed wall in every
+    /// future model. So the space is put to whoever is running the analysis.
+    /// </summary>
+    [Fact]
+    public void AGlazedShopfrontIsPutToAPersonRatherThanDecidedByTheRule()
+    {
+        BoundaryFeature storefront = Feature(BoundaryFeatureKind.EmbeddedWall, "Walls");
+        var boundary = new[] { storefront, Feature(BoundaryFeatureKind.CurtainWallPanel, "Curtain Panels") };
+
+        Assert.True(Qualifier().NeedsAJudgement(Enclosed(), boundary));
+    }
+
+    [Fact]
+    public void ConfirmingAnElementMakesItAnEntranceAndSaysWhoSaidSo()
+    {
+        BoundaryFeature storefront = Feature(BoundaryFeatureKind.EmbeddedWall, "Walls");
+
+        QualificationOutcome outcome = Qualifier().Qualify(
+            Enclosed(),
+            new[] { storefront },
+            new HashSet<RevitElementId> { storefront.Element.Id });
+
+        Assert.True(outcome.IsQualified);
+        Assert.True(outcome.Room!.RestsOnOperatorJudgement);
+        Assert.Equal(EntranceAuthority.OperatorConfirmed, outcome.Room.Entrances[0].Authority);
+        Assert.Contains("confirmed by the operator", outcome.Explanation, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The safety property. A confirmation settles which of the things actually
+    /// on a boundary is the way in; it cannot introduce one that is not there.
+    /// Without this, a mistaken pick would manufacture a room out of nothing.
+    /// </summary>
+    [Fact]
+    public void ConfirmingSomethingThatIsNotOnTheBoundaryChangesNothing()
+    {
+        var elsewhere = new RevitElementId(999999);
+
+        QualificationOutcome outcome = Qualifier().Qualify(
+            Enclosed(),
+            new[] { Feature(BoundaryFeatureKind.CurtainWallPanel, "Curtain Panels") },
+            new HashSet<RevitElementId> { elsewhere });
+
+        Assert.False(outcome.IsQualified);
+        Assert.Equal(RejectionReason.NoEntrance, outcome.Reason);
+    }
+
+    /// <summary>
+    /// Nobody can be asked about a boundary with nothing set into it: there is
+    /// nothing to point at. Those regions are rejected outright rather than
+    /// producing a prompt that cannot be answered.
+    /// </summary>
+    [Fact]
+    public void ABareBoundaryIsNotWorthAskingAbout()
+    {
+        Assert.False(Qualifier().NeedsAJudgement(Enclosed(), Array.Empty<BoundaryFeature>()));
+    }
+
+    [Fact]
+    public void ARegionTheRuleAlreadyAcceptsIsNotWorthAskingAbout()
+    {
+        Assert.False(Qualifier().NeedsAJudgement(
+            Enclosed(),
+            new[] { Feature(BoundaryFeatureKind.Door, "Doors") }));
+    }
+
+    [Fact]
+    public void AnUnenclosedRegionIsNotWorthAskingAboutEither()
+    {
+        // No judgement about an entrance can make a space that continues past an
+        // opening into a room of its own.
+        Assert.False(Qualifier().NeedsAJudgement(
+            OpenToTheNextSpace(),
+            new[] { Feature(BoundaryFeatureKind.EmbeddedWall, "Walls") }));
+    }
+
+    [Fact]
+    public void ConfirmationCannotRescueAnUnenclosedRegion()
+    {
+        BoundaryFeature storefront = Feature(BoundaryFeatureKind.EmbeddedWall, "Walls");
+
+        QualificationOutcome outcome = Qualifier().Qualify(
+            OpenToTheNextSpace(),
+            new[] { storefront },
+            new HashSet<RevitElementId> { storefront.Element.Id });
+
+        Assert.Equal(RejectionReason.NotEnclosed, outcome.Reason);
+    }
+
+    [Fact]
+    public void ARoomWithBothKindsOfEntranceReportsBoth()
+    {
+        BoundaryFeature storefront = Feature(BoundaryFeatureKind.EmbeddedWall, "Walls");
+
+        QualificationOutcome outcome = Qualifier().Qualify(
+            Enclosed(),
+            new[] { Feature(BoundaryFeatureKind.Door, "Doors"), storefront },
+            new HashSet<RevitElementId> { storefront.Element.Id });
+
+        Assert.Equal(2, outcome.Room!.Entrances.Count);
+        Assert.Contains("1 x Door", outcome.Explanation, StringComparison.Ordinal);
+        Assert.Contains("confirmed by the operator", outcome.Explanation, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void TheRuleReportsWhatItAdmits()
     {
