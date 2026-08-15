@@ -57,12 +57,34 @@ public static class PlanCircuitProbe
         double LargestGapFeet,
         List<SegmentInfo> Segments);
 
+    /// <summary>
+    /// A wall embedded in a wall that bounds a space, described in enough detail
+    /// to say whether a person could walk through it.
+    ///
+    /// The entrance rule cannot simply count embedded walls. One space is
+    /// entered through a storefront embedded in a chase wall, but three others
+    /// have embedded walls that are plainly not ways in: a stair glazing panel,
+    /// two runs of exterior rainscreen and something called "_Not Defined". What
+    /// separates them has to come from the model.
+    /// </summary>
+    private sealed record EmbeddedWallInfo(
+        long HostWallId,
+        long WallId,
+        string TypeName,
+        string Kind,
+        double WidthFeet,
+        double LengthFeet,
+        int PanelCount,
+        List<string> Panels,
+        List<string> Inserts);
+
     private sealed record BoundaryElementInfo(
         long ElementId,
         string CategoryName,
         string TypeName,
         string WallKind,
-        List<string> Inserts);
+        List<string> Inserts,
+        List<EmbeddedWallInfo> EmbeddedWalls);
 
     /// <summary>
     /// What the candidate region built from these loops makes of them, at one
@@ -91,6 +113,8 @@ public static class PlanCircuitProbe
         List<BoundaryElementInfo> BoundaryElements,
         RegionInfo? AtProjectTolerance,
         RegionInfo? AtRevitTolerance,
+        List<BoundaryFeatureCollector.Found> FeaturesOnBoundary,
+        QualificationOutcome? Outcome,
         string? Failure);
 
     public static DiagnosticReport Probe(AnalysisContext context)
@@ -149,6 +173,7 @@ public static class PlanCircuitProbe
         report.Item("Model unchanged", clean ? "yes" : "NO - INVESTIGATE");
 
         WriteSummary(report, circuits);
+        WriteQualification(report, circuits);
         WriteAreaCrossCheck(report, circuits);
         WriteEntranceInvestigation(report, circuits);
         WriteCircuits(report, circuits);
@@ -289,6 +314,17 @@ public static class PlanCircuitProbe
             List<BoundaryElementInfo> boundaryElements =
                 DescribeBoundaryElements(document, curvesByBoundaryElement.Keys);
 
+            // Everything set into this boundary, tested geometrically rather
+            // than inferred from what the bounding walls happen to contain.
+            List<BoundaryFeatureCollector.Found> features =
+                BoundaryFeatureCollector.Collect(document, room, options).ToList();
+
+            // The rule applied to the region, at Revit's own tolerance. Both the
+            // rooms found and the candidates rejected are the answer.
+            var region = new CandidateRegion(new RegionId(index), loops, revitShortCurveTolerance);
+            QualificationOutcome outcome = new RoomQualifier(EntranceRule.Default)
+                .Qualify(region, features.Select(f => f.Feature).ToList());
+
             return new CircuitInfo(
                 index,
                 circuit.Area,
@@ -304,6 +340,8 @@ public static class PlanCircuitProbe
                 boundaryElements,
                 DescribeRegion(index, loops, CoincidentPointToleranceFeet),
                 DescribeRegion(index, loops, revitShortCurveTolerance),
+                features,
+                outcome,
                 null);
         }
         catch (Exception exception)
@@ -340,7 +378,8 @@ public static class PlanCircuitProbe
 
     private static CircuitInfo Failed(int index, PlanCircuit circuit, bool wasRoomLocated, string failure) =>
         new(index, circuit.Area, circuit.SideNum, wasRoomLocated, false, "(none)", 0, 0,
-            new List<LoopInfo>(), new List<string>(), 0, new List<BoundaryElementInfo>(), null, null, failure);
+            new List<LoopInfo>(), new List<string>(), 0, new List<BoundaryElementInfo>(), null, null,
+            new List<BoundaryFeatureCollector.Found>(), null, failure);
 
     /// <summary>
     /// Builds the candidate region these loops describe, and records what it
@@ -416,6 +455,7 @@ public static class PlanCircuitProbe
                 : "-";
 
             var inserts = new List<string>();
+            var embedded = new List<EmbeddedWallInfo>();
             if (element is HostObject host)
             {
                 // The flags ask for rectangular openings and for embedded walls
@@ -432,6 +472,11 @@ public static class PlanCircuitProbe
                     inserts.Add(string.Create(
                         CultureInfo.InvariantCulture,
                         $"{insert.Category?.Name ?? "(no category)"} id {insertId.Value} \"{insert.Name}\""));
+
+                    if (insert is Wall embeddedWall)
+                    {
+                        embedded.Add(DescribeEmbeddedWall(document, id, embeddedWall));
+                    }
                 }
             }
 
@@ -440,10 +485,85 @@ public static class PlanCircuitProbe
                 element.Category?.Name ?? "(no category)",
                 typeName,
                 wallKind,
-                inserts.OrderBy(i => i, StringComparer.Ordinal).ToList()));
+                inserts.OrderBy(i => i, StringComparer.Ordinal).ToList(),
+                embedded.OrderBy(e => e.WallId).ToList()));
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Describes a wall embedded in a bounding wall, in enough detail to judge
+    /// whether it admits a person.
+    ///
+    /// A curtain wall is reported through its panels, because that is where the
+    /// answer lives: a storefront that someone walks through has a door among
+    /// its panels, while a glazing panel is glass all the way across. Panels are
+    /// grouped and counted rather than listed one by one, so a wall with sixty
+    /// identical panes does not bury the one that matters.
+    /// </summary>
+    private static EmbeddedWallInfo DescribeEmbeddedWall(Document document, long hostWallId, Wall wall)
+    {
+        string typeName = document.GetElement(wall.GetTypeId()) is ElementType type ? type.Name : "(no type)";
+        string kind = (document.GetElement(wall.GetTypeId()) as WallType)?.Kind.ToString() ?? "(unknown)";
+        double length = (wall.Location as LocationCurve)?.Curve.Length ?? 0;
+
+        var panelCensus = new Dictionary<string, long>(StringComparer.Ordinal);
+        int panelCount = 0;
+
+        // Null for anything that is not a curtain wall, which is the common case.
+        CurtainGrid? curtainGrid = wall.CurtainGrid;
+        if (curtainGrid is not null)
+        {
+            foreach (ElementId panelId in curtainGrid.GetPanelIds())
+            {
+                panelCount++;
+
+                Element? panel = document.GetElement(panelId);
+                if (panel is null)
+                {
+                    continue;
+                }
+
+                string panelType = document.GetElement(panel.GetTypeId()) is ElementType t ? t.Name : "(no type)";
+                string key = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{panel.Category?.Name ?? "(no category)"} / {panelType}");
+
+                panelCensus.TryGetValue(key, out long current);
+                panelCensus[key] = current + 1;
+            }
+        }
+
+        var inserts = new List<string>();
+        foreach (ElementId insertId in wall.FindInserts(true, false, true, true))
+        {
+            Element? insert = document.GetElement(insertId);
+            if (insert is null)
+            {
+                continue;
+            }
+
+            inserts.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"{insert.Category?.Name ?? "(no category)"} id {insertId.Value} \"{insert.Name}\""));
+        }
+
+        var panels = panelCensus
+            .OrderBy(e => e.Key, StringComparer.Ordinal)
+            .Select(e => string.Create(CultureInfo.InvariantCulture, $"{e.Key} x{e.Value}"))
+            .ToList();
+
+        return new EmbeddedWallInfo(
+            hostWallId,
+            wall.Id.Value,
+            typeName,
+            kind,
+            wall.Width,
+            length,
+            panelCount,
+            panels,
+            inserts.OrderBy(i => i, StringComparer.Ordinal).ToList());
     }
 
     private static LoopInfo DescribeLoop(Document document, CoreBoundaryLoop loop)
@@ -595,6 +715,82 @@ public static class PlanCircuitProbe
         report.Blank();
         report.Item("All loops closed", ok.Count(c => c.Loops.Count > 0 && c.Loops.All(l => l.IsClosed)));
         report.Item("Some loop open", ok.Count(c => c.Loops.Any(l => !l.IsClosed)));
+    }
+
+    /// <summary>
+    /// Applies the project's definition of a room, and reports both outcomes.
+    ///
+    /// The rejections are the more useful half. A list of rooms found gives no
+    /// way to tell a correct rejection from a room that was missed, so every
+    /// rejected candidate names its reason and what was on its boundary, and can
+    /// be disagreed with.
+    ///
+    /// What each region is credited with here has been tested geometrically: the
+    /// insert was projected onto the boundary curves its own host wall produced
+    /// for this space. That is the difference between an element contained by a
+    /// bounding wall and one that opens onto the space, and getting it wrong
+    /// once gave a four square metre cupboard eight doors.
+    /// </summary>
+    private static void WriteQualification(DiagnosticReport report, List<CircuitInfo> circuits)
+    {
+        report.Section("QUALIFICATION (is this region a room?)");
+
+        List<CircuitInfo> judged = circuits.Where(c => c.Outcome is not null).ToList();
+
+        report.Item("Regions judged", judged.Count);
+        report.Item("  rooms", judged.Count(c => c.Outcome!.IsQualified));
+        report.Item("  rejected", judged.Count(c => !c.Outcome!.IsQualified));
+        report.Blank();
+
+        foreach (RejectionReason reason in Enum.GetValues<RejectionReason>())
+        {
+            report.Item(
+                string.Create(CultureInfo.InvariantCulture, $"  rejected: {reason}"),
+                judged.Count(c => c.Outcome!.Reason == reason));
+        }
+
+        report.Blank();
+        report.Line("  Rooms found:");
+        foreach (CircuitInfo circuit in judged.Where(c => c.Outcome!.IsQualified))
+        {
+            double squareMetres = UnitUtils.ConvertFromInternalUnits(circuit.RoomAreaFeet2, UnitTypeId.SquareMeters);
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"    [{circuit.Index,-3}] {squareMetres,9:0.###} m2   {circuit.Outcome!.Explanation}"));
+        }
+
+        report.Blank();
+        report.Line("  Candidates rejected:");
+        foreach (CircuitInfo circuit in judged.Where(c => !c.Outcome!.IsQualified))
+        {
+            double squareMetres = UnitUtils.ConvertFromInternalUnits(circuit.RoomAreaFeet2, UnitTypeId.SquareMeters);
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"    [{circuit.Index,-3}] {squareMetres,9:0.###} m2   {circuit.Outcome!.Reason}"));
+            report.Line($"           {circuit.Outcome!.Explanation}");
+        }
+
+        report.Blank();
+        report.Line("  Everything found on each boundary, with how far it projected onto it:");
+        report.Line("  An insert counts only if it lands on a boundary curve produced by its own host.");
+
+        foreach (CircuitInfo circuit in judged)
+        {
+            if (circuit.FeaturesOnBoundary.Count == 0)
+            {
+                continue;
+            }
+
+            report.Blank();
+            report.Line(string.Create(CultureInfo.InvariantCulture, $"    [{circuit.Index}]"));
+
+            foreach (BoundaryFeatureCollector.Found found in circuit.FeaturesOnBoundary)
+            {
+                report.Line(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"        {found.Feature.Kind,-22} {found.Feature.Element}   host {found.HostElementId}   at {found.DistanceFeet:0.###} ft"));
+            }
+        }
     }
 
     /// <summary>
@@ -757,6 +953,8 @@ public static class PlanCircuitProbe
             }
         }
 
+        WriteEmbeddedWalls(report, doorless);
+
         report.Blank();
         report.Line("  Insert categories across every space with no door:");
         var census = new Dictionary<string, long>(StringComparer.Ordinal);
@@ -774,6 +972,71 @@ public static class PlanCircuitProbe
         else
         {
             report.Census(census);
+        }
+    }
+
+    /// <summary>
+    /// Lists every wall embedded in the boundary of a space with no door.
+    ///
+    /// This is the evidence the entrance rule needs and does not yet have. One
+    /// of these spaces is a real room, entered through a storefront embedded in
+    /// a chase wall. Three others also have embedded walls and are plainly not
+    /// rooms: a stair glazing panel, two runs of exterior rainscreen, and one
+    /// wall whose type is called "_Not Defined". A rule that counted embedded
+    /// walls would admit all four.
+    ///
+    /// So the question is what tells them apart, and it is asked of the model
+    /// rather than answered from the type names, which are a naming convention
+    /// this project has no right to rely on. Kind, width, length, curtain panels
+    /// and inserts are all reported; whichever of them actually separates the
+    /// one from the other three becomes the rule.
+    /// </summary>
+    private static void WriteEmbeddedWalls(DiagnosticReport report, List<CircuitInfo> doorless)
+    {
+        report.Blank();
+        report.Line("  Walls embedded in these boundaries, in full:");
+
+        var rows = doorless
+            .SelectMany(c => c.BoundaryElements.SelectMany(e => e.EmbeddedWalls.Select(w => (Circuit: c, Wall: w))))
+            .ToList();
+
+        if (rows.Count == 0)
+        {
+            report.Line("    none");
+            return;
+        }
+
+        foreach ((CircuitInfo circuit, EmbeddedWallInfo wall) in rows)
+        {
+            double squareMetres = UnitUtils.ConvertFromInternalUnits(circuit.CircuitAreaFeet2, UnitTypeId.SquareMeters);
+            double widthMm = UnitUtils.ConvertFromInternalUnits(wall.WidthFeet, UnitTypeId.Millimeters);
+            double lengthMm = UnitUtils.ConvertFromInternalUnits(wall.LengthFeet, UnitTypeId.Millimeters);
+
+            report.Blank();
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"    circuit [{circuit.Index}] ({squareMetres:0.##} m2)   embedded wall id {wall.WallId} in host {wall.HostWallId}"));
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"      type \"{wall.TypeName}\"   kind {wall.Kind}   width {widthMm:0.#} mm   length {lengthMm:0.#} mm"));
+            report.Line(string.Create(
+                CultureInfo.InvariantCulture,
+                $"      curtain panels {wall.PanelCount}"));
+
+            foreach (string panel in wall.Panels)
+            {
+                report.Line($"        panel: {panel}");
+            }
+
+            if (wall.Inserts.Count == 0)
+            {
+                report.Line("        inserts: none");
+            }
+
+            foreach (string insert in wall.Inserts)
+            {
+                report.Line($"        insert: {insert}");
+            }
         }
     }
 
