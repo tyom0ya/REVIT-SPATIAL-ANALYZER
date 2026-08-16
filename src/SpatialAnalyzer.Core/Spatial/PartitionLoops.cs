@@ -27,9 +27,24 @@ public sealed record PartitionLoop(IReadOnlyList<PartitionWall> Walls, AreaMeasu
 /// does not pretend otherwise - a person looks at the number and decides. The
 /// number is here so that deciding is possible; that is the whole of its job.
 /// </summary>
+/// <param name="GapBetweenNearestFreeEndsInternalFeet">
+/// How far apart the run's two nearest loose ends are. Meaningful for a run
+/// that almost closes on itself, and merely a fact about the run's shape for
+/// one that does not - a long L of partitions has ends at opposite corners of
+/// a flat, and that distance is not a gap in anything.
+/// </param>
+/// <param name="FreeEnds">
+/// Every end of the run that meets no other wall in the set. These are what
+/// actually matter: an end is either in open air, or it stops against a wall
+/// that was not in the set being searched. Which of those it is cannot be
+/// decided here, because the walls that would settle it were filtered out
+/// before this saw them. Reporting the ends lets a caller with the whole model
+/// ask the question this type cannot.
+/// </param>
 public sealed record PartitionChain(
     IReadOnlyList<PartitionWall> Walls,
-    double GapBetweenNearestFreeEndsInternalFeet);
+    double GapBetweenNearestFreeEndsInternalFeet,
+    IReadOnlyList<Point2D> FreeEnds);
 
 /// <summary>
 /// What the partition walls, taken together, turn out to describe.
@@ -121,15 +136,18 @@ public static class PartitionLoops
             else
             {
                 // Closed as a graph, open on the ground. Reported as what it is.
-                chains.Add(new PartitionChain(ordered, ring.LargestGapInternalFeet));
+                chains.Add(new PartitionChain(ordered, ring.LargestGapInternalFeet, Array.Empty<Point2D>()));
             }
         }
 
         foreach (List<int> component in Components(walls.Count, junction, w => hangsFree[w]))
         {
+            IReadOnlyList<Point2D> ends = FreeEndsOf(component, walls, junction);
+
             chains.Add(new PartitionChain(
                 component.Select(w => walls[w]).ToList(),
-                NearestApproachOfFreeEnds(component, walls, junction)));
+                NearestApproachOf(ends),
+                ends));
         }
 
         return new PartitionArrangement(
@@ -355,7 +373,22 @@ public static class PartitionLoops
     /// is probably a drafting slip. Both come back here as a number, and which
     /// is which stays a person's call.
     /// </summary>
-    private static double NearestApproachOfFreeEnds(
+    private static double NearestApproachOf(IReadOnlyList<Point2D> ends)
+    {
+        double nearest = double.PositiveInfinity;
+
+        for (int a = 0; a < ends.Count; a++)
+        {
+            for (int b = a + 1; b < ends.Count; b++)
+            {
+                nearest = Math.Min(nearest, ends[a].DistanceTo(ends[b]));
+            }
+        }
+
+        return nearest;
+    }
+
+    private static IReadOnlyList<Point2D> FreeEndsOf(
         List<int> component,
         IReadOnlyList<PartitionWall> walls,
         int[] junction)
@@ -381,20 +414,6 @@ public static class PartitionLoops
             }
         }
 
-        if (free.Count < 2)
-        {
-            return double.PositiveInfinity;
-        }
-
-        double nearest = double.PositiveInfinity;
-        for (int a = 0; a < free.Count; a++)
-        {
-            for (int b = a + 1; b < free.Count; b++)
-            {
-                nearest = Math.Min(nearest, free[a].DistanceTo(free[b]));
-            }
-        }
-
-        return nearest;
+        return free;
     }
 }

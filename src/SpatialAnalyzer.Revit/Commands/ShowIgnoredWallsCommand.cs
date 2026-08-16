@@ -1,0 +1,148 @@
+using System.Globalization;
+using Autodesk.Revit.Attributes;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+using SpatialAnalyzer.Core.Spatial;
+using SpatialAnalyzer.Revit.Boundaries;
+using SpatialAnalyzer.Revit.Context;
+using SpatialAnalyzer.Revit.Diagnostics;
+
+namespace SpatialAnalyzer.Revit.Commands;
+
+/// <summary>
+/// Draws the walls Revit is told to ignore for rooms, and marks every place a
+/// run of them stops short of enclosing anything.
+///
+/// This exists because the analysis reached a question it cannot answer. Those
+/// walls hide rooms or they do not, and what decides it is where their gaps
+/// fall: at doorways, or where a partition meets a wall that the search was
+/// never given. The numbers are identical either way. The plan is not.
+///
+/// So this is a command for looking, not for concluding. It colours the walls,
+/// draws a line across each gap and writes its width beside it, and stops.
+/// </summary>
+[Transaction(TransactionMode.Manual)]
+public class ShowIgnoredWallsCommand : IExternalCommand
+{
+    /// <summary>
+    /// The original model is never written to by this project's tooling, and
+    /// this command commits detail lines and view overrides.
+    /// </summary>
+    private const string ProtectedPathFragment = @"\models\pristine\";
+
+    public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+    {
+        UIDocument? uiDocument = commandData.Application.ActiveUIDocument;
+
+        AnalysisContextResolution resolution = AnalysisContextResolver.Resolve(uiDocument);
+        if (!resolution.IsSuccess)
+        {
+            TaskDialog.Show("Spatial Analyzer", resolution.FailureReason!);
+            return Result.Succeeded;
+        }
+
+        AnalysisContext context = resolution.Context!;
+
+        if (context.Document.PathName.Contains(ProtectedPathFragment, StringComparison.OrdinalIgnoreCase))
+        {
+            TaskDialog.Show(
+                "Spatial Analyzer",
+                "This document is the pristine model, which development tooling must not write to."
+                + Environment.NewLine + Environment.NewLine
+                + "Open the working copy under models\\dev and run this there.");
+            return Result.Cancelled;
+        }
+
+        PartitionSurvey.Result survey;
+        try
+        {
+            var tolerance = new ClosureTolerance(context.Document.Application.ShortCurveTolerance);
+            survey = PartitionSurvey.Of(context, tolerance.InternalFeet);
+        }
+        catch (Exception exception)
+        {
+            message = $"The walls could not be read: {exception.GetType().Name}: {exception.Message}";
+            return Result.Failed;
+        }
+
+        if (survey.WallsConsidered == 0)
+        {
+            TaskDialog.Show(
+                "Spatial Analyzer",
+                "Every wall in this view is room bounding, so nothing is being walked past and there is nothing to draw.");
+            return Result.Succeeded;
+        }
+
+        PartitionMarker.Result marked;
+        using (var transaction = new Transaction(context.Document, "Spatial Analyzer show ignored walls"))
+        {
+            transaction.Start();
+
+            try
+            {
+                marked = PartitionMarker.Apply(context, survey);
+            }
+            catch (Exception exception)
+            {
+                transaction.RollBack();
+                message = $"The walls could not be drawn: {exception.GetType().Name}: {exception.Message}";
+                return Result.Failed;
+            }
+
+            transaction.Commit();
+        }
+
+        uiDocument!.RefreshActiveView();
+
+        var lines = new List<string>
+        {
+            string.Create(CultureInfo.InvariantCulture, $"Walls Revit ignores for rooms:  {survey.WallsConsidered}"),
+            string.Create(CultureInfo.InvariantCulture, $"   orange on the plan:  {marked.WallsMarked}"),
+            string.Empty,
+            string.Create(CultureInfo.InvariantCulture, $"Spaces they enclose on their own:  {survey.Arrangement.ClosedLoops.Count}"),
+            string.Empty,
+            "Loose ends of those walls, measured to the nearest wall of ANY kind:",
+            string.Create(CultureInfo.InvariantCulture, $"   green, stopping against a wall:  {marked.EndsMeetingAnotherWall}"),
+            string.Create(CultureInfo.InvariantCulture, $"   red, standing in open air:  {marked.EndsInOpenAir}"),
+        };
+
+        if (marked.SmallestOpenGapInternalFeet > 0)
+        {
+            lines.Add(string.Create(
+                CultureInfo.InvariantCulture,
+                $"      nearest of those:  {marked.SmallestOpenGapInternalFeet * 304.8:0} mm"));
+        }
+
+        lines.Add(string.Empty);
+
+        // The counts are the finding. Saying what they mean here saves reading
+        // it out of a report, and the two readings point opposite ways.
+        lines.Add(marked.EndsMeetingAnotherWall > marked.EndsInOpenAir
+            ? "Mostly green: these partitions close their spaces together with walls this"
+              + Environment.NewLine
+              + "analysis never looked at, so there are rooms here it cannot yet find."
+            : "Mostly red: these partitions genuinely stop in open air, so they enclose"
+              + Environment.NewLine
+              + "nothing and no room is hidden behind them.");
+
+        lines.Add(string.Empty);
+        lines.Add("Press Ctrl+Z once to remove all of this.");
+
+        var done = new TaskDialog("Spatial Analyzer")
+        {
+            MainInstruction = "Ignored walls drawn.",
+            MainContent = string.Join(Environment.NewLine, lines),
+            CommonButtons = TaskDialogCommonButtons.Close,
+        };
+
+        if (marked.Failures.Count > 0)
+        {
+            done.ExpandedContent = string.Join(
+                Environment.NewLine,
+                marked.Failures.Distinct(StringComparer.Ordinal).Take(20));
+        }
+
+        done.Show();
+        return Result.Succeeded;
+    }
+}
