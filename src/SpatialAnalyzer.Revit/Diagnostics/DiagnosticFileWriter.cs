@@ -21,17 +21,29 @@ public static class DiagnosticFileWriter
     /// <summary>
     /// Writes the report and returns the full path written.
     /// </summary>
-    public static string Write(DiagnosticReport report, string fileNameStem)
+    public static string Write(DiagnosticReport report, string fileNameStem) =>
+        WriteText(report.ToText(), fileNameStem, "txt");
+
+    /// <summary>
+    /// Writes text and returns the full path written.
+    ///
+    /// The exported analysis goes through here too. It is not a diagnostic, but
+    /// where a file lands and how its bytes are written are the same decisions,
+    /// and two answers to them would eventually differ.
+    /// </summary>
+    public static string WriteText(string content, string fileNameStem, string extension)
     {
+        ArgumentNullException.ThrowIfNull(content);
+
         Directory.CreateDirectory(DirectoryPath);
 
         // Sortable, filename-safe, and unambiguous between runs a second apart.
         string timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-        string path = Path.Combine(DirectoryPath, $"{timestamp}-{fileNameStem}.txt");
+        string path = Path.Combine(DirectoryPath, $"{timestamp}-{fileNameStem}.{extension}");
 
-        // UTF-8 without a BOM, and the report's own line separator rather than
+        // UTF-8 without a BOM, and the content's own line separator rather than
         // the platform's, so two runs can be compared byte for byte.
-        File.WriteAllText(path, report.ToText(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.WriteAllText(path, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
         return path;
     }

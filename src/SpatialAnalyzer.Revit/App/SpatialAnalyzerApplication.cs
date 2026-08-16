@@ -29,6 +29,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
             AddOutlineRegionsButton(panel);
             AddQualifyRegionsButton(panel);
             AddAnalyzeSelectionButton(panel);
+            AddExportAnalysisButton(panel);
 
             // Listens for changes so a kept analysis is discarded the moment the
             // model it describes moves.
@@ -183,6 +184,26 @@ public class SpatialAnalyzerApplication : IExternalApplication
                             + "model geometry, and cannot bound a room. Asks before running, refuses to touch "
                             + "the pristine model, and puts everything in one transaction so a single undo "
                             + "removes it.",
+        };
+
+        panel.AddItem(buttonData);
+    }
+
+    private static void AddExportAnalysisButton(RibbonPanel panel)
+    {
+        string assemblyPath = Assembly.GetExecutingAssembly().Location;
+
+        var buttonData = new PushButtonData(
+            name: "SpatialAnalyzerExportAnalysis",
+            text: "Export Analysis",
+            assemblyName: assemblyPath,
+            className: typeof(ExportAnalysisCommand).FullName)
+        {
+            ToolTip = "Write the whole plan out as JSON: every room, what is in it, and what was rejected.",
+            LongDescription = "Lists each granular room with its area, what lets you in, and the elements "
+                            + "it contains as category, family, type and id. Doors appear under both rooms "
+                            + "they connect. Regions that were not reported as rooms are listed with the "
+                            + "reason. Reads only; the only thing written is the file.",
         };
 
         panel.AddItem(buttonData);
