@@ -1,5 +1,6 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Architecture;
+using SpatialAnalyzer.Core.Export;
 using SpatialAnalyzer.Core.Spatial;
 using SpatialAnalyzer.Revit.Boundaries;
 using SpatialAnalyzer.Revit.Context;
@@ -24,12 +25,16 @@ public static class RegionQualification
 {
     private const SpatialElementBoundaryLocation BoundaryLocation = SpatialElementBoundaryLocation.Finish;
 
+    /// <summary>A foot is exactly 0.3048 metres, so this factor is exact.</summary>
+    private const double MillimetresPerFoot = 304.8;
+
     public sealed record RegionReading(
         CandidateRegion Region,
         IReadOnlyList<BoundaryFeatureCollector.Found> Features,
         double RevitAreaFeet2,
         string RoomLabel,
-        bool WasRoomLocated);
+        bool WasRoomLocated,
+        bool FoundBehindAnIgnoredWall);
 
     public sealed record Reading(
         IReadOnlyList<RegionReading> Regions,
@@ -37,7 +42,45 @@ public static class RegionQualification
         int RoomsBefore,
         int RoomsAfter,
         TransactionStatus Status,
+        PartitionSurvey.Result Partitions,
         IReadOnlyList<string> Failures);
+
+    /// <summary>
+    /// The read's own account of itself, in the shape the export writes.
+    ///
+    /// Lives here because this is what holds the facts, and is shared by both
+    /// commands that export so the file and the dialog cannot disagree.
+    /// </summary>
+    public static ExportedReading Describe(Reading reading)
+    {
+        ArgumentNullException.ThrowIfNull(reading);
+
+        // Sixty-six walls failing the same way produce sixty-six near-identical
+        // lines, which is a worse diagnosis than one. Distinct first, then
+        // capped - and the true total travels alongside, so a truncated list
+        // cannot be mistaken for a complete one.
+        var sample = reading.Failures.Distinct(StringComparer.Ordinal).Take(25).ToList();
+
+        PartitionArrangement found = reading.Partitions.Arrangement;
+
+        return new ExportedReading(
+            reading.Partitions.WallsConsidered,
+            found.ClosedLoops
+                .Select(loop => new ExportedEnclosure(
+                    loop.Area.InternalSquareFeet,
+                    loop.Area.InternalSquareFeet * SpatialExport.SquareMetresPerSquareFoot,
+                    loop.Walls.Select(w => w.Id.Value).ToList()))
+                .ToList(),
+            found.OpenChains
+                .Select(chain => new ExportedOpenRun(
+                    chain.GapBetweenNearestFreeEndsInternalFeet,
+                    chain.GapBetweenNearestFreeEndsInternalFeet * MillimetresPerFoot,
+                    chain.Walls.Select(w => w.Id.Value).ToList()))
+                .ToList(),
+            found.Tangled.Count,
+            reading.Failures.Count,
+            sample);
+    }
 
     public static Reading Read(AnalysisContext context)
     {
@@ -53,12 +96,20 @@ public static class RegionQualification
         List<RegionReading> regions;
         TransactionStatus status;
 
+        // Walls Revit is told to ignore hide whole rooms, and Revit's topology
+        // cannot be persuaded to divide a region for them - measured, not
+        // assumed. What they enclose is worked out from their own geometry
+        // instead, which needs nothing written and so happens outside the
+        // transaction entirely.
+        PartitionSurvey.Result partitions = PartitionSurvey.Of(context, tolerance.InternalFeet);
+        failures.AddRange(partitions.Failures);
+
         using (var transaction = new Transaction(document, "Spatial Analyzer region reading"))
         {
             transaction.Start();
             try
             {
-                regions = ReadRegions(context, tolerance, failures);
+                regions = ReadRegions(context, tolerance, new HashSet<long>(), failures);
             }
             finally
             {
@@ -66,7 +117,14 @@ public static class RegionQualification
             }
         }
 
-        return new Reading(regions, tolerance.InternalFeet, roomsBefore, CountRooms(document), status, failures);
+        return new Reading(
+            regions,
+            tolerance.InternalFeet,
+            roomsBefore,
+            CountRooms(document),
+            status,
+            partitions,
+            failures);
     }
 
     private static int CountRooms(Document document) =>
@@ -78,6 +136,7 @@ public static class RegionQualification
     private static List<RegionReading> ReadRegions(
         AnalysisContext context,
         ClosureTolerance tolerance,
+        HashSet<long> dividerLineIds,
         List<string> failures)
     {
         Document document = context.Document;
@@ -126,12 +185,21 @@ public static class RegionQualification
 
                 IReadOnlyList<CoreBoundaryLoop> loops = BoundaryExtractor.Extract(room, options);
 
+                // A region bounded by one of the lines we laid exists only
+                // because a wall Revit was told to ignore was made to count.
+                // That is a different kind of finding from a region the model
+                // reports on its own, and the export says so.
+                bool behindAnIgnoredWall = dividerLineIds.Count > 0
+                    && loops.SelectMany(l => l.Segments)
+                        .Any(s => dividerLineIds.Contains(s.Reference.ElementId.Value));
+
                 readings.Add(new RegionReading(
                     new CandidateRegion(new RegionId(thisIndex), loops, tolerance.InternalFeet),
                     BoundaryFeatureCollector.Collect(document, room, options).ToList(),
                     room.Area,
                     $"{room.Number} {room.Name}".Trim(),
-                    circuit.IsRoomLocated));
+                    circuit.IsRoomLocated,
+                    behindAnIgnoredWall));
             }
             catch (Exception exception)
             {

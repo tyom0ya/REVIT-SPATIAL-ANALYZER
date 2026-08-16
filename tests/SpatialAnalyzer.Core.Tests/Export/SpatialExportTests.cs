@@ -78,14 +78,16 @@ public class SpatialExportTests
     private static SpatialExport Build(
         IReadOnlyList<QualificationOutcome> outcomes,
         DoorAdjacencyIndex? doors = null,
-        IReadOnlyDictionary<RegionId, IReadOnlyList<ElementDescriptor>>? elements = null) =>
+        IReadOnlyDictionary<RegionId, IReadOnlyList<ElementDescriptor>>? elements = null,
+        string? scope = null) =>
         SpatialExport.Build(
+            scope ?? SpatialExport.WholePlan,
             L2,
             "Snowdon Towers Sample Architectural",
             @"C:\models\dev\Snowdon.rvt",
             Tolerance,
             outcomes,
-            doors ?? NoDoors(),
+            (doors ?? NoDoors()).Adjacencies,
             elements ?? new Dictionary<RegionId, IReadOnlyList<ElementDescriptor>>(),
             Generated);
 
@@ -247,6 +249,59 @@ public class SpatialExportTests
     }
 
     /// <summary>
+    /// A file describing one room and a file describing a plan that happens to
+    /// hold one room would otherwise be indistinguishable, because the summary
+    /// counts what the file contains. A reader would take a fragment for the
+    /// whole building.
+    /// </summary>
+    [Fact]
+    public void AFileSaysWhetherItCoversAPlanOrOneRoom()
+    {
+        Assert.Equal("plan", Build(new[] { Qualified(0) }).Scope);
+
+        SpatialExport oneRoom = Build(
+            new[] { Qualified(6) },
+            scope: SpatialExport.OneRoom(new RegionId(6)));
+
+        Assert.Equal("room R6", oneRoom.Scope);
+        Assert.Single(oneRoom.Rooms);
+    }
+
+    /// <summary>
+    /// A single-room file carries only the doors that touch that room, which is
+    /// why the doors are passed in rather than taken from the whole index.
+    /// </summary>
+    [Fact]
+    public void ASingleRoomFileCarriesOnlyItsOwnDoors()
+    {
+        var mine = new BoundaryFeature(Element(786853, "Doors"), BoundaryFeatureKind.Door);
+        var elsewhere = new BoundaryFeature(Element(999999, "Doors"), BoundaryFeatureKind.Door);
+
+        DoorAdjacencyIndex doors = DoorAdjacencyIndex.Build(
+            new Dictionary<RegionId, IReadOnlyList<BoundaryFeature>>
+            {
+                [new RegionId(6)] = new[] { mine },
+                [new RegionId(7)] = new[] { mine },
+                [new RegionId(8)] = new[] { elsewhere },
+            },
+            EntranceRule.Default);
+
+        SpatialExport export = SpatialExport.Build(
+            SpatialExport.OneRoom(new RegionId(6)),
+            L2,
+            "Snowdon",
+            @"C:\models\dev\Snowdon.rvt",
+            Tolerance,
+            new[] { Qualified(6) },
+            doors.Touching(new RegionId(6)),
+            new Dictionary<RegionId, IReadOnlyList<ElementDescriptor>>(),
+            Generated);
+
+        ExportedDoor door = Assert.Single(export.Doors);
+        Assert.Equal(786853, door.Element.Id);
+    }
+
+    /// <summary>
     /// Two runs over an unchanged model must differ nowhere but the timestamp,
     /// which is what makes two exports worth comparing at all.
     /// </summary>
@@ -328,5 +383,64 @@ public class SpatialExportTests
     public void LineEndingsDoNotFollowTheHost()
     {
         Assert.DoesNotContain("\r", SpatialExportWriter.ToJson(Build(new[] { Qualified(0) })), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A read that laid no lines and a read that laid them to no effect produce
+    /// the same rooms. The file has to tell them apart, because the first is a
+    /// fault in this tool and the second is a fact about the model.
+    /// </summary>
+    [Fact]
+    public void HowTheRegionsWereObtainedTravelsWithThem()
+    {
+        SpatialExport export = SpatialExport.Build(
+            SpatialExport.WholePlan,
+            L2,
+            "Snowdon Towers Sample Architectural",
+            @"C:\models\dev\Snowdon.rvt",
+            Tolerance,
+            new[] { Qualified(0) },
+            NoDoors().Adjacencies,
+            new Dictionary<RegionId, IReadOnlyList<ElementDescriptor>>(),
+            Generated,
+
+            // The acceptance model's second floor: forty-four walls the model
+            // ignores, one space genuinely enclosed by them, and one run that
+            // stops short. The run's gap is carried at its measured size and
+            // the run is not reported as a room - which is the whole point of
+            // the section, and why it is pinned by a test.
+            new ExportedReading(
+                44,
+                new[] { new ExportedEnclosure(60.0, 5.5741824, new long[] { 111, 222, 333, 444 }) },
+                new[] { new ExportedOpenRun(0.1476, 45.0, new long[] { 555, 666 }) },
+                3,
+                0,
+                Array.Empty<string>()));
+
+        using JsonDocument parsed = JsonDocument.Parse(SpatialExportWriter.ToJson(export));
+        JsonElement reading = parsed.RootElement.GetProperty("reading");
+
+        Assert.Equal(44, reading.GetProperty("wallsIgnoredForRooms").GetInt32());
+        Assert.Equal(60.0, reading.GetProperty("enclosures")[0].GetProperty("areaInternalSquareFeet").GetDouble(), 9);
+        Assert.Equal(4, reading.GetProperty("enclosures")[0].GetProperty("wallIds").GetArrayLength());
+        Assert.Equal(45.0, reading.GetProperty("openRuns")[0].GetProperty("gapMillimetres").GetDouble(), 9);
+        Assert.Equal(3, reading.GetProperty("tangledWalls").GetInt32());
+        Assert.Equal(0, reading.GetProperty("failureCount").GetInt32());
+    }
+
+    /// <summary>
+    /// Not recorded is not the same as nothing to report. Zeroes would say the
+    /// read looked for walls the model ignores and found none, which is a claim
+    /// a caller that never observed the read has no standing to make.
+    /// </summary>
+    [Fact]
+    public void AnUnobservedReadIsNullRatherThanZero()
+    {
+        SpatialExport export = Build(new[] { Qualified(0) });
+
+        Assert.Null(export.Reading);
+
+        using JsonDocument parsed = JsonDocument.Parse(SpatialExportWriter.ToJson(export));
+        Assert.Equal(JsonValueKind.Null, parsed.RootElement.GetProperty("reading").ValueKind);
     }
 }

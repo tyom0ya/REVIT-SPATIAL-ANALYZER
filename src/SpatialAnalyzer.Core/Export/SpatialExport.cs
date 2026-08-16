@@ -85,6 +85,61 @@ public sealed record ExportSummary(
     int UnattributedBoundarySegments);
 
 /// <summary>
+/// What the read had to do to see the plan at all, and what it could not do.
+///
+/// Walls the model is told to ignore hide whole rooms, so the read lays a room
+/// separation line along each one inside the transaction it rolls back. Whether
+/// that worked is not visible in the room list: a read that laid no lines and a
+/// read that laid them to no effect both produce exactly the number of regions
+/// the model reports on its own.
+///
+/// Those two have different causes and different fixes, so the counts are
+/// written into the file rather than shown once in a dialog and lost. A file
+/// that quietly reported the model's own answer, while the tool believed it had
+/// found more, is the failure this section exists to make impossible.
+/// </summary>
+/// <param name="FailureCount">
+/// Every problem the read met, including those beyond the sample below. A count
+/// larger than the list means the list is truncated, which is worth knowing
+/// before concluding from it.
+/// </param>
+/// <summary>
+/// A space enclosed by walls the model ignores for rooms - a room the model
+/// contains and does not report.
+/// </summary>
+public sealed record ExportedEnclosure(
+    double AreaInternalSquareFeet,
+    double AreaSquareMetres,
+    IReadOnlyList<long> WallIds);
+
+/// <summary>
+/// A run of ignored walls that does not close, and how far short it falls.
+///
+/// Exported at whatever size the gap is, and never acted on. A run that misses
+/// by two millimetres and a run that misses by a metre are the same kind of
+/// finding here: walls that would enclose a space if something joined their
+/// ends. Whether that something is a missing wall or a doorway is a question
+/// about the building, and the answer is not in the geometry.
+/// </summary>
+public sealed record ExportedOpenRun(
+    double GapInternalFeet,
+    double GapMillimetres,
+    IReadOnlyList<long> WallIds);
+
+/// <param name="TangledWalls">
+/// Walls that take part in an enclosure but meet where more than two walls come
+/// together, so which of the several possible rings is a room cannot be read
+/// off the lines. Counted, not guessed at.
+/// </param>
+public sealed record ExportedReading(
+    int WallsIgnoredForRooms,
+    IReadOnlyList<ExportedEnclosure> Enclosures,
+    IReadOnlyList<ExportedOpenRun> OpenRuns,
+    int TangledWalls,
+    int FailureCount,
+    IReadOnlyList<string> Failures);
+
+/// <summary>
 /// The analysis of one plan, as plain data ready to be written out.
 ///
 /// Built in Core from things already decided, so what the file says and what the
@@ -93,9 +148,11 @@ public sealed record ExportSummary(
 /// </summary>
 public sealed record SpatialExport(
     string Schema,
+    string Scope,
     string Generated,
     ExportContext Context,
     ExportSummary Summary,
+    ExportedReading? Reading,
     IReadOnlyList<ExportedRoom> Rooms,
     IReadOnlyList<ExportedRejection> RegionsRejected,
     IReadOnlyList<ExportedDoor> Doors)
@@ -106,6 +163,21 @@ public sealed record SpatialExport(
     /// rather than a silent one.
     /// </summary>
     public const string SchemaName = "revit-spatial-analyzer/rooms/1";
+
+    /// <summary>
+    /// A file describing every region on the plan.
+    /// </summary>
+    public const string WholePlan = "plan";
+
+    /// <summary>
+    /// A file describing one room and nothing else.
+    ///
+    /// Written into the file because the summary counts what the file contains,
+    /// and a one-room export would otherwise report a plan of one region. A
+    /// consumer that could not tell the two apart would read a fragment as the
+    /// whole building.
+    /// </summary>
+    public static string OneRoom(RegionId room) => $"room {room}";
 
     /// <summary>
     /// Square feet to square metres. A foot is exactly 0.3048 metres by
@@ -122,16 +194,33 @@ public sealed record SpatialExport(
     /// a test can pin it, and so the only part of the file that changes between
     /// two runs over an unchanged model is the part that should.
     /// </param>
+    /// <param name="scope">
+    /// What this file covers - the whole plan, or one room. The summary counts
+    /// what is in the file, so without this a fragment could be read as the
+    /// whole building.
+    /// </param>
+    /// <param name="doors">
+    /// The doors to describe. Taking a list rather than the whole index is what
+    /// lets a single-room file carry only the doors that touch that room.
+    /// </param>
+    /// <param name="reading">
+    /// How the regions were obtained, if the caller knows. Null means not
+    /// recorded rather than nothing to report - a file that printed zeroes for
+    /// a read it never observed would be inventing evidence.
+    /// </param>
     public static SpatialExport Build(
+        string scope,
         AnalysisContextInfo context,
         string documentTitle,
         string documentPath,
         double closureToleranceInternalFeet,
         IReadOnlyList<QualificationOutcome> outcomes,
-        DoorAdjacencyIndex doors,
+        IReadOnlyList<DoorAdjacency> doors,
         IReadOnlyDictionary<RegionId, IReadOnlyList<ElementDescriptor>> elementsByRoom,
-        string generated)
+        string generated,
+        ExportedReading? reading = null)
     {
+        ArgumentNullException.ThrowIfNull(scope);
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(outcomes);
         ArgumentNullException.ThrowIfNull(doors);
@@ -153,7 +242,7 @@ public sealed record SpatialExport(
             rooms.Add(Describe(outcome.Room, outcome.Explanation, elementsByRoom));
         }
 
-        var exportedDoors = doors.Adjacencies
+        var exportedDoors = doors
             .OrderBy(a => a.Door.Id.Value)
             .Select(a => new ExportedDoor(
                 Describe(a.Door),
@@ -172,6 +261,7 @@ public sealed record SpatialExport(
 
         return new SpatialExport(
             SchemaName,
+            scope,
             generated,
             new ExportContext(
                 documentTitle,
@@ -186,6 +276,7 @@ public sealed record SpatialExport(
                 context.PhaseId.Value,
                 closureToleranceInternalFeet),
             summary,
+            reading,
             rooms,
             rejected,
             exportedDoors);

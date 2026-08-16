@@ -91,7 +91,7 @@ public static class BoundaryExtractor
         return BoundaryReference.Unattributed();
     }
 
-    private static BoundaryCurve ConvertCurve(Curve curve)
+    internal static BoundaryCurve ConvertCurve(Curve curve)
     {
         BoundaryCurveKind kind = curve switch
         {
