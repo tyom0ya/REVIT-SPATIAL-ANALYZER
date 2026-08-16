@@ -1,5 +1,6 @@
 using Autodesk.Revit.DB;
 using SpatialAnalyzer.Core.Domain;
+using SpatialAnalyzer.Core.Geometry;
 using SpatialAnalyzer.Core.Spatial;
 using SpatialAnalyzer.Revit.Context;
 
@@ -39,7 +40,19 @@ public static class PartitionSurvey
     public sealed record Result(
         int WallsConsidered,
         PartitionArrangement Arrangement,
+        PlanSubdivision Subdivision,
         IReadOnlyList<string> Failures);
+
+    /// <summary>
+    /// The faces that exist only because of a wall the model ignores - the
+    /// rooms it is not reporting.
+    ///
+    /// A face bounded entirely by walls Revit already respects is a room Revit
+    /// already gives us, so it is not news. One with an ignored wall on its
+    /// boundary is.
+    /// </summary>
+    public static IReadOnlyList<PlanFace> HiddenBy(Result survey) =>
+        survey.Subdivision.Faces.Where(f => f.TouchesAWallIgnoredForRooms).ToList();
 
     /// <summary>
     /// Reads every wall in this view that Revit is told not to treat as room
@@ -53,16 +66,17 @@ public static class PartitionSurvey
 
         var failures = new List<string>();
 
-        List<Wall> walls = new FilteredElementCollector(context.Document, context.View.Id)
+        List<Wall> everyWall = new FilteredElementCollector(context.Document, context.View.Id)
             .OfCategory(BuiltInCategory.OST_Walls)
             .WhereElementIsNotElementType()
             .OfType<Wall>()
-            .Where(IsIgnoredForRooms)
             .ToList();
 
         var partitions = new List<PartitionWall>();
+        var plan = new List<PlanWall>();
+        int ignoredCount = 0;
 
-        foreach (Wall wall in walls)
+        foreach (Wall wall in everyWall)
         {
             if (wall.Location is not LocationCurve location)
             {
@@ -71,9 +85,20 @@ public static class PartitionSurvey
 
             try
             {
-                partitions.Add(new PartitionWall(
-                    new RevitElementId(wall.Id.Value),
-                    BoundaryExtractor.ConvertCurve(location.Curve)));
+                var id = new RevitElementId(wall.Id.Value);
+                BoundaryCurve centre = BoundaryExtractor.ConvertCurve(location.Curve);
+                bool ignored = IsIgnoredForRooms(wall);
+
+                // Every wall goes to the subdivision, because a space is closed
+                // by whatever happens to close it and the model's opinion of
+                // which walls bound rooms is exactly what is in question.
+                plan.Add(new PlanWall(id, centre, ignored));
+
+                if (ignored)
+                {
+                    ignoredCount++;
+                    partitions.Add(new PartitionWall(id, centre));
+                }
             }
             catch (Exception exception)
             {
@@ -82,8 +107,9 @@ public static class PartitionSurvey
         }
 
         return new Result(
-            walls.Count,
+            ignoredCount,
             PartitionLoops.Find(partitions, toleranceInternalFeet),
+            PlanFaces.Find(plan, toleranceInternalFeet),
             failures);
     }
 

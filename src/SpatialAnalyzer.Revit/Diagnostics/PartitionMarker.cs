@@ -50,11 +50,17 @@ public static class PartitionMarker
     private const int WallWeight = 6;
     private const int GapWeight = 7;
 
+    /// <summary>Blue for the rooms the model does not report.</summary>
+    private static readonly Color FoundColour = new(0, 90, 220);
+
+    public const string FoundStyleName = "Spatial Analyzer - Room Not Reported";
+
     public sealed record Result(
         int WallsMarked,
         int EndsInOpenAir,
         int EndsMeetingAnotherWall,
         double SmallestOpenGapInternalFeet,
+        int RoomsFound,
         IReadOnlyList<string> Failures);
 
     /// <summary>
@@ -148,12 +154,111 @@ public static class PartitionMarker
             }
         }
 
+        int rooms = OutlineRoomsNotReported(context, survey, elevation, shortest, failures);
+
         return new Result(
             marked,
             open,
             closed,
             double.IsInfinity(smallestOpen) ? 0 : smallestOpen,
+            rooms,
             failures);
+    }
+
+    /// <summary>
+    /// Draws each space the ignored walls close, and writes its area inside.
+    ///
+    /// These are the rooms the whole exercise was after. They are outlined
+    /// rather than filled because a fill would hide the furniture that shows
+    /// what the room is for, and the point is to be able to look at one and
+    /// say whether it is a bathroom.
+    /// </summary>
+    private static int OutlineRoomsNotReported(
+        AnalysisContext context,
+        PartitionSurvey.Result survey,
+        double elevation,
+        double shortest,
+        List<string> failures)
+    {
+        GraphicsStyle? style = GapLineStyle(context.Document, FoundStyleName, FoundColour, failures);
+        int drawn = 0;
+
+        foreach (PlanFace face in PartitionSurvey.HiddenBy(survey))
+        {
+            IReadOnlyList<Point2D> outline = face.Outline;
+            bool complete = true;
+
+            for (int i = 0; i < outline.Count; i++)
+            {
+                Point2D from = outline[i];
+                Point2D to = outline[(i + 1) % outline.Count];
+
+                var a = new XYZ(from.X, from.Y, elevation);
+                var b = new XYZ(to.X, to.Y, elevation);
+
+                if (a.DistanceTo(b) <= shortest)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    DetailCurve line = context.Document.Create.NewDetailCurve(context.View, Line.CreateBound(a, b));
+                    if (style is not null)
+                    {
+                        line.LineStyle = style;
+                    }
+                }
+                catch (Exception exception)
+                {
+                    failures.Add($"room outline: {exception.GetType().Name}: {exception.Message}");
+                    complete = false;
+                    break;
+                }
+            }
+
+            if (!complete)
+            {
+                continue;
+            }
+
+            drawn++;
+            LabelArea(context, outline, elevation, face.Area.InternalSquareFeet, failures);
+        }
+
+        return drawn;
+    }
+
+    private static void LabelArea(
+        AnalysisContext context,
+        IReadOnlyList<Point2D> outline,
+        double elevation,
+        double squareFeet,
+        List<string> failures)
+    {
+        try
+        {
+            ElementId typeId = context.Document.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType);
+            if (typeId == ElementId.InvalidElementId)
+            {
+                return;
+            }
+
+            var at = new XYZ(outline.Average(p => p.X), outline.Average(p => p.Y), elevation);
+
+            TextNote.Create(
+                context.Document,
+                context.View.Id,
+                at,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{squareFeet * 0.09290304:0.0} m2"),
+                typeId);
+        }
+        catch (Exception exception)
+        {
+            failures.Add($"room label: {exception.GetType().Name}: {exception.Message}");
+        }
     }
 
     /// <summary>

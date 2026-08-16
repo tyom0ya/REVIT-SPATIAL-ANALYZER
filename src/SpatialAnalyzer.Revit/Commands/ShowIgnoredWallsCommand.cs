@@ -99,7 +99,27 @@ public class ShowIgnoredWallsCommand : IExternalCommand
             string.Create(CultureInfo.InvariantCulture, $"Walls Revit ignores for rooms:  {survey.WallsConsidered}"),
             string.Create(CultureInfo.InvariantCulture, $"   orange on the plan:  {marked.WallsMarked}"),
             string.Empty,
-            string.Create(CultureInfo.InvariantCulture, $"Spaces they enclose on their own:  {survey.Arrangement.ClosedLoops.Count}"),
+            string.Empty,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"ROOMS THE MODEL DOES NOT REPORT:  {marked.RoomsFound}   (blue, with areas)"),
+            string.Empty,
+
+            // Every stage's count, so a floor where rooms are missing says
+            // which stage lost them rather than only that they are absent.
+            // Guessing at that twice has already cost two rebuilds.
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"Spaces the walls enclose in all:  {survey.Subdivision.Faces.Count}"),
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"   of those, touching an ignored wall:  {PartitionSurvey.HiddenBy(survey).Count}"),
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"   set aside as too narrow to stand in:  {survey.Subdivision.FacesTooNarrowToStandIn}"),
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"   wall pieces after splitting:  {survey.Subdivision.SegmentsAfterSplitting}"),
             string.Empty,
             "Loose ends of those walls, measured to the nearest wall of ANY kind:",
             string.Create(CultureInfo.InvariantCulture, $"   green, stopping against a wall:  {marked.EndsMeetingAnotherWall}"),
@@ -115,15 +135,11 @@ public class ShowIgnoredWallsCommand : IExternalCommand
 
         lines.Add(string.Empty);
 
-        // The counts are the finding. Saying what they mean here saves reading
-        // it out of a report, and the two readings point opposite ways.
-        lines.Add(marked.EndsMeetingAnotherWall > marked.EndsInOpenAir
-            ? "Mostly green: these partitions close their spaces together with walls this"
+        lines.Add(marked.RoomsFound > 0
+            ? "Each blue outline is a space these walls enclose that Revit does not report"
               + Environment.NewLine
-              + "analysis never looked at, so there are rooms here it cannot yet find."
-            : "Mostly red: these partitions genuinely stop in open air, so they enclose"
-              + Environment.NewLine
-              + "nothing and no room is hidden behind them.");
+              + "as a room, because it is told to walk past the walls that close it."
+            : "These walls close no space that Revit is not already reporting.");
 
         lines.Add(string.Empty);
         lines.Add("Press Ctrl+Z once to remove all of this.");
