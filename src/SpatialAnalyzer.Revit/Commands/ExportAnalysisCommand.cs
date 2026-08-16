@@ -55,19 +55,25 @@ public class ExportAnalysisCommand : IExternalCommand
             placement = ElementPlacement.Of(context, analysis.Index);
 
             SpatialExport export = SpatialExport.Build(
+                SpatialExport.WholePlan,
                 context.ToInfo(),
                 context.Document.Title,
                 string.IsNullOrEmpty(context.Document.PathName) ? "(unsaved)" : context.Document.PathName,
                 analysis.Reading.ClosureToleranceFeet,
                 analysis.Outcomes.Select(o => o.Outcome).ToList(),
-                analysis.Index.Doors,
+                analysis.Index.Doors.Adjacencies,
                 placement.ByRoom,
 
                 // Written by the caller rather than read from a clock inside the
                 // export, so that the only part of the file which differs
                 // between two runs over an unchanged model is the part that
                 // should.
-                DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+                DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture),
+
+                // How the regions were arrived at travels with them. A dialog
+                // is read once and closed; the file is what gets kept, sent on
+                // and argued with.
+                RegionQualification.Describe(analysis.Reading));
 
             json = SpatialExportWriter.ToJson(export);
         }
@@ -93,6 +99,19 @@ public class ExportAnalysisCommand : IExternalCommand
             string.Create(CultureInfo.InvariantCulture, $"Rooms:  {analysis.Index.Rooms.Count}"),
             string.Create(CultureInfo.InvariantCulture, $"Regions rejected:  {analysis.Outcomes.Count - analysis.Index.Rooms.Count}"),
             string.Empty,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"Walls Revit ignores for rooms:  {analysis.Reading.Partitions.WallsConsidered}"),
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"  spaces they enclose:  {analysis.Reading.Partitions.Arrangement.ClosedLoops.Count}"),
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"  runs that stop short:  {analysis.Reading.Partitions.Arrangement.OpenChains.Count}{NearestMiss(analysis.Reading)}"),
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"  walls in a tangle:  {analysis.Reading.Partitions.Arrangement.Tangled.Count}"),
+            string.Empty,
             string.Create(CultureInfo.InvariantCulture, $"Elements considered:  {placement.Considered}"),
             string.Create(CultureInfo.InvariantCulture, $"  placed in a room:  {placement.Placed}"),
             string.Create(CultureInfo.InvariantCulture, $"  in no room:  {placement.InNoRoom}   {Top(placement.InNoRoomByCategory)}"),
@@ -109,6 +128,19 @@ public class ExportAnalysisCommand : IExternalCommand
             MainContent = string.Join(Environment.NewLine, lines),
         };
 
+        // Anything Revit refused goes on screen. A read that quietly does
+        // nothing looks exactly like a read that found nothing, and telling
+        // those apart afterwards costs a round trip.
+        if (analysis.Reading.Failures.Count > 0)
+        {
+            done.ExpandedContent = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{analysis.Reading.Failures.Count} problem(s) while reading:{Environment.NewLine}")
+                + string.Join(
+                    Environment.NewLine,
+                    analysis.Reading.Failures.Distinct(StringComparer.Ordinal).Take(20));
+        }
+
         done.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Open the containing folder");
         done.CommonButtons = TaskDialogCommonButtons.Close;
 
@@ -118,6 +150,32 @@ public class ExportAnalysisCommand : IExternalCommand
         }
 
         return Result.Succeeded;
+    }
+
+    /// <summary>
+    /// How close the nearest run comes to enclosing something.
+    ///
+    /// Shown because it is the number a person needs in order to decide, and
+    /// withheld from any decision this tool makes: a run that misses by two
+    /// millimetres is still a run that misses, and closing it here would invent
+    /// a room. The file carries the gap for every run; this is only the
+    /// smallest, so the dialog says whether looking is worth the trouble.
+    /// </summary>
+    private static string NearestMiss(RegionQualification.Reading reading)
+    {
+        var runs = reading.Partitions.Arrangement.OpenChains;
+        if (runs.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        double smallest = runs.Min(r => r.GapBetweenNearestFreeEndsInternalFeet);
+        if (double.IsInfinity(smallest))
+        {
+            return string.Empty;
+        }
+
+        return string.Create(CultureInfo.InvariantCulture, $"   (nearest misses by {smallest * 304.8:0.#} mm)");
     }
 
     /// <summary>

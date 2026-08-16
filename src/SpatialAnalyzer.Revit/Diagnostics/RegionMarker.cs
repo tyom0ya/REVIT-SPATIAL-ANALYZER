@@ -34,6 +34,28 @@ public static class RegionMarker
 
     public const string TransactionName = "Spatial Analyzer - outline regions (undo to remove)";
 
+    /// <summary>
+    /// A line style of this project's own, so the outline can be seen.
+    ///
+    /// The first version drew with whatever style was current and was invisible,
+    /// for a reason worth recording: the outline traces the room boundary, which
+    /// runs along the finish faces of the walls, so every line landed exactly on
+    /// top of the wall it was tracing and disappeared into it. Only the labels,
+    /// which sit in open space, could be seen.
+    ///
+    /// The fix is to draw the same geometry differently, not to draw different
+    /// geometry. Nudging the outline off the boundary to clear the walls would
+    /// have made it visible by putting it where the boundary is not, which in a
+    /// tool whose subject is exactly where boundaries are would be a small lie.
+    /// </summary>
+    public const string LineStyleName = "Spatial Analyzer - Region Outline";
+
+    /// <summary>Magenta: absent from architectural drawings, and not one of the
+    /// three colours the highlight uses, so the two cannot be confused.</summary>
+    private static readonly Color OutlineColour = new(255, 0, 255);
+
+    private const int OutlineWeight = 5;
+
     public sealed record MarkResult(
         int RegionsDrawn,
         int CurvesDrawn,
@@ -70,9 +92,11 @@ public static class RegionMarker
                 // into plain data, and what gets committed is only annotation.
                 elevation = ChooseDrawingElevation(context);
 
+                GraphicsStyle? style = OutlineStyle(document, failures);
+
                 foreach (RegionOutline outline in outlines)
                 {
-                    (int drawn, int skipped) = DrawOutline(document, context.View, outline, elevation, failures);
+                    (int drawn, int skipped) = DrawOutline(document, context.View, outline, elevation, style, failures);
                     curves += drawn;
                     tooShort += skipped;
                     regions++;
@@ -222,11 +246,46 @@ public static class RegionMarker
         return origin?.Z ?? context.Level.Elevation;
     }
 
+    /// <summary>
+    /// Finds this project's line style, creating it if the model has not seen it
+    /// before.
+    ///
+    /// Looked up by name first so running twice reuses one style rather than
+    /// adding another. It is created inside the same transaction as everything
+    /// else, so undoing the outline removes the style along with it.
+    /// </summary>
+    private static GraphicsStyle? OutlineStyle(Document document, List<string> failures)
+    {
+        try
+        {
+            Category lines = document.Settings.Categories.get_Item(BuiltInCategory.OST_Lines);
+
+            Category style = lines.SubCategories.Contains(LineStyleName)
+                ? lines.SubCategories.get_Item(LineStyleName)
+                : document.Settings.Categories.NewSubcategory(lines, LineStyleName);
+
+            style.LineColor = OutlineColour;
+            style.SetLineWeight(OutlineWeight, GraphicsStyleType.Projection);
+
+            return style.GetGraphicsStyle(GraphicsStyleType.Projection);
+        }
+        catch (Exception exception)
+        {
+            // Without a style of its own the outline still draws, in whatever is
+            // current, which is what made it invisible in the first place. Worth
+            // saying rather than leaving someone to wonder.
+            failures.Add($"could not prepare the outline line style ({exception.GetType().Name}: {exception.Message}); "
+                       + "the outline will be drawn in the current style and may be hard to see");
+            return null;
+        }
+    }
+
     private static (int Drawn, int TooShort) DrawOutline(
         Document document,
         View view,
         RegionOutline outline,
         double elevation,
+        GraphicsStyle? style,
         List<string> failures)
     {
         int drawn = 0;
@@ -255,7 +314,13 @@ public static class RegionMarker
 
                     try
                     {
-                        document.Create.NewDetailCurve(view, Line.CreateBound(from, to));
+                        DetailCurve curve = document.Create.NewDetailCurve(view, Line.CreateBound(from, to));
+
+                        if (style is not null)
+                        {
+                            curve.LineStyle = style;
+                        }
+
                         drawn++;
                     }
                     catch (Exception exception)
