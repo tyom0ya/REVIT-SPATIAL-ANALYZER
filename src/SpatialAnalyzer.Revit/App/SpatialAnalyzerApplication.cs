@@ -137,6 +137,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
         pulldown.AddPushButton(Preflight());
         pulldown.AddSeparator();
         pulldown.AddPushButton(SurveyRoomBounding());
+        pulldown.AddPushButton(ShowIgnoredWalls());
         pulldown.AddPushButton(InspectElement());
         pulldown.AddPushButton(AuditModel());
         pulldown.AddPushButton(ProbeCircuits());
@@ -241,6 +242,16 @@ public class SpatialAnalyzerApplication : IExternalApplication
         + "would appear if they did divide rooms, by switching the flag on, asking Revit again and "
         + "rolling the change back. Nothing is written, and only you can say which of them really "
         + "divide a room.");
+
+    private static PushButtonData ShowIgnoredWalls() => Button<ShowIgnoredWallsCommand>(
+        "SpatialAnalyzerShowIgnoredWalls",
+        "Show Ignored Walls",
+        RibbonIcons.RoomBounding,
+        "Draw the walls Revit ignores for rooms, and mark where each run of them stops short.",
+        "Colours those walls orange and draws a red line across every place a run of them fails to "
+        + "close, with the width written beside it. Where that line falls is the whole question: across "
+        + "a doorway means no room is hidden there, while against another wall means that wall completes "
+        + "the space and this analysis never saw it. One undo removes everything it draws.");
 
     private static PushButtonData InspectElement() => Button<InspectElementCommand>(
         "SpatialAnalyzerInspectElement",

@@ -63,13 +63,17 @@ public static class RegionQualification
 
         PartitionArrangement found = reading.Partitions.Arrangement;
 
+        // The spaces the ignored walls close together with ordinary ones. The
+        // older search, given only the ignored walls, finds none of these -
+        // measured on both floors of the acceptance model - so this is the list
+        // that answers the question the tool was asked.
         return new ExportedReading(
             reading.Partitions.WallsConsidered,
-            found.ClosedLoops
-                .Select(loop => new ExportedEnclosure(
-                    loop.Area.InternalSquareFeet,
-                    loop.Area.InternalSquareFeet * SpatialExport.SquareMetresPerSquareFoot,
-                    loop.Walls.Select(w => w.Id.Value).ToList()))
+            PartitionSurvey.HiddenBy(reading.Partitions)
+                .Select(face => new ExportedEnclosure(
+                    face.Area.InternalSquareFeet,
+                    face.Area.InternalSquareFeet * SpatialExport.SquareMetresPerSquareFoot,
+                    face.Walls.Select(w => w.Value).ToList()))
                 .ToList(),
             found.OpenChains
                 .Select(chain => new ExportedOpenRun(
