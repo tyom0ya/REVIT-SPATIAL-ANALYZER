@@ -77,7 +77,7 @@ public class HighlightRoomCommand : IExternalCommand
             return Result.Cancelled;
         }
 
-        Element element = context.Document.GetElement(reference);
+        Element element = WhatWasActuallyClicked(context.Document, reference);
         ElementDescriptor descriptor = ElementDescriptorFactory.Describe(element);
         Point2D? location = ElementPlanPoint.RepresentativeOf(element);
 
@@ -179,6 +179,82 @@ public class HighlightRoomCommand : IExternalCommand
         }
 
         return ExportOneRoom(context, analysis, placement, room, ref message);
+    }
+
+    /// <summary>
+    /// The element under the cursor, seen past any group it belongs to.
+    ///
+    /// Revit answers a pick inside a model group with the group itself, and a
+    /// group's position is its own origin - which for an apartment core sits
+    /// out in the corridor. Taken at face value, clicking a bathroom fixture
+    /// highlights the corridor, and the analysis looks wrong while being
+    /// perfectly right about the element it was given.
+    ///
+    /// So the group is opened and its members are asked which of them the
+    /// cursor was actually over. Members whose extent covers the clicked point
+    /// are the candidates, and the smallest of those wins: a toilet inside a
+    /// bathroom inside an apartment is covered by all three extents, and the
+    /// one a person meant is the one they could see.
+    /// </summary>
+    private static Element WhatWasActuallyClicked(Document document, Reference reference)
+    {
+        Element element = document.GetElement(reference);
+
+        if (reference.GlobalPoint is not XYZ clicked)
+        {
+            return element;
+        }
+
+        // Groups nest, so this descends until it reaches something that is not
+        // one. The depth limit is a guard against a malformed model rather than
+        // a real expectation; nothing sane nests that far.
+        for (int depth = 0; element is Group group && depth < 8; depth++)
+        {
+            Element? member = SmallestMemberOver(document, group, clicked);
+            if (member is null)
+            {
+                break;
+            }
+
+            element = member;
+        }
+
+        return element;
+    }
+
+    private static Element? SmallestMemberOver(Document document, Group group, XYZ clicked)
+    {
+        Element? smallest = null;
+        double smallestExtent = double.MaxValue;
+
+        foreach (ElementId id in group.GetMemberIds())
+        {
+            Element? member = document.GetElement(id);
+            BoundingBoxXYZ? box = member?.get_BoundingBox(null);
+
+            if (member is null || box is null)
+            {
+                continue;
+            }
+
+            // Compared in plan. A pick lands on a surface at whatever height
+            // the view cuts, and holding the click to the element's vertical
+            // extent would reject the very things a plan shows best.
+            if (clicked.X < box.Min.X || clicked.X > box.Max.X ||
+                clicked.Y < box.Min.Y || clicked.Y > box.Max.Y)
+            {
+                continue;
+            }
+
+            double extent = (box.Max.X - box.Min.X) * (box.Max.Y - box.Min.Y);
+            if (extent < smallestExtent)
+            {
+                smallestExtent = extent;
+                smallest = member;
+            }
+        }
+
+        return smallest;
     }
 
     /// <summary>
