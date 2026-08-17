@@ -261,6 +261,44 @@ public class PlanFacesTests
     }
 
     [Fact]
+    public void APointIsFoundInsideASimpleRoom()
+    {
+        PlanFace face = Assert.Single(PlanFaces.Find(Room(), Tolerance).Faces);
+
+        Assert.True(PlanFaces.TryFindPointInside(face, out Point2D inside));
+        Assert.InRange(inside.X, 0, 10);
+        Assert.InRange(inside.Y, 0, 6);
+    }
+
+    /// <summary>
+    /// An L-shaped flat has its centroid out in the corridor. A room placed
+    /// there would sit in the wrong space and look exactly like the analysis
+    /// having failed, so the point has to be tested rather than computed and
+    /// trusted.
+    /// </summary>
+    [Fact]
+    public void APointIsFoundInsideAnLShapedRoom()
+    {
+        var walls = new List<PlanWall>
+        {
+            Wall(0, 0, 10, 0),
+            Wall(10, 0, 10, 2),
+            Wall(10, 2, 2, 2),
+            Wall(2, 2, 2, 10),
+            Wall(2, 10, 0, 10),
+            Wall(0, 10, 0, 0),
+        };
+
+        PlanFace face = Assert.Single(PlanFaces.Find(walls, Tolerance).Faces);
+
+        Assert.True(PlanFaces.TryFindPointInside(face, out Point2D inside));
+
+        // The notch is everything above y=2 and right of x=2. A point there is
+        // outside the flat however plausible its arithmetic looked.
+        Assert.False(inside.X > 2 && inside.Y > 2, "The point must not land in the notch.");
+    }
+
+    [Fact]
     public void NoWallsIsNotAnError()
     {
         PlanSubdivision found = PlanFaces.Find(Array.Empty<PlanWall>(), Tolerance);

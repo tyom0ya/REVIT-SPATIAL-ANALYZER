@@ -82,6 +82,149 @@ public static class PlanFaces
     /// </summary>
     public const double NarrowestUsableWidthFeet = 0.5;
 
+    /// <summary>
+    /// A point that lies inside a face, for putting a room at.
+    ///
+    /// The centroid is tried first and is usually right, but an L-shaped flat
+    /// has its centroid out in the corridor - placing a room there would put it
+    /// in the wrong space entirely and look, from the outside, exactly like the
+    /// analysis being wrong. So the answer is tested rather than assumed, and
+    /// the search falls back to points just inside each edge and then to a
+    /// sweep of the interior.
+    /// </summary>
+    public static bool TryFindPointInside(PlanFace face, out Point2D inside)
+    {
+        ArgumentNullException.ThrowIfNull(face);
+
+        IReadOnlyList<Point2D> outline = face.Outline;
+        inside = default;
+
+        if (outline.Count < 3)
+        {
+            return false;
+        }
+
+        if (Encloses(outline, Centroid(outline)))
+        {
+            inside = Centroid(outline);
+            return true;
+        }
+
+        // Just inside the middle of each edge, stepping along the inward
+        // normal. For any simple polygon at least one such point lands in it.
+        for (int i = 0; i < outline.Count; i++)
+        {
+            Point2D a = outline[i];
+            Point2D b = outline[(i + 1) % outline.Count];
+
+            double dx = b.X - a.X;
+            double dy = b.Y - a.Y;
+            double length = Math.Sqrt((dx * dx) + (dy * dy));
+
+            if (length <= 0)
+            {
+                continue;
+            }
+
+            // The outline is traced anticlockwise, so the interior lies to the
+            // left of each edge.
+            double step = Math.Min(length, 0.1) / 2.0;
+            var candidate = new Point2D(
+                ((a.X + b.X) / 2.0) - (dy / length * step),
+                ((a.Y + b.Y) / 2.0) + (dx / length * step));
+
+            if (Encloses(outline, candidate))
+            {
+                inside = candidate;
+                return true;
+            }
+        }
+
+        double minX = outline.Min(p => p.X);
+        double maxX = outline.Max(p => p.X);
+        double minY = outline.Min(p => p.Y);
+        double maxY = outline.Max(p => p.Y);
+
+        for (int x = 1; x < 8; x++)
+        {
+            for (int y = 1; y < 8; y++)
+            {
+                var candidate = new Point2D(
+                    minX + ((maxX - minX) * x / 8.0),
+                    minY + ((maxY - minY) * y / 8.0));
+
+                if (Encloses(outline, candidate))
+                {
+                    inside = candidate;
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static Point2D Centroid(IReadOnlyList<Point2D> outline)
+    {
+        double twiceArea = 0;
+        double x = 0;
+        double y = 0;
+
+        for (int i = 0; i < outline.Count; i++)
+        {
+            Point2D a = outline[i];
+            Point2D b = outline[(i + 1) % outline.Count];
+
+            double cross = (a.X * b.Y) - (b.X * a.Y);
+            twiceArea += cross;
+            x += (a.X + b.X) * cross;
+            y += (a.Y + b.Y) * cross;
+        }
+
+        return Math.Abs(twiceArea) < 1e-12
+            ? new Point2D(outline.Average(p => p.X), outline.Average(p => p.Y))
+            : new Point2D(x / (3 * twiceArea), y / (3 * twiceArea));
+    }
+
+    /// <summary>
+    /// Ray casting, with the half-open rule at each edge so a ray passing
+    /// exactly through a corner is counted once rather than twice or not at
+    /// all.
+    /// </summary>
+    /// <summary>
+    /// Whether a face contains a point - used to ask whether a space already
+    /// has a room in it.
+    /// </summary>
+    public static bool Contains(PlanFace face, Point2D point)
+    {
+        ArgumentNullException.ThrowIfNull(face);
+        return Encloses(face.Outline, point);
+    }
+
+    private static bool Encloses(IReadOnlyList<Point2D> outline, Point2D point)
+    {
+        bool inside = false;
+
+        for (int i = 0, j = outline.Count - 1; i < outline.Count; j = i++)
+        {
+            Point2D a = outline[i];
+            Point2D b = outline[j];
+
+            if ((a.Y > point.Y) == (b.Y > point.Y))
+            {
+                continue;
+            }
+
+            double at = ((b.X - a.X) * (point.Y - a.Y) / (b.Y - a.Y)) + a.X;
+            if (point.X < at)
+            {
+                inside = !inside;
+            }
+        }
+
+        return inside;
+    }
+
     public static PlanSubdivision Find(IReadOnlyList<PlanWall> walls, double toleranceInternalFeet)
     {
         ArgumentNullException.ThrowIfNull(walls);

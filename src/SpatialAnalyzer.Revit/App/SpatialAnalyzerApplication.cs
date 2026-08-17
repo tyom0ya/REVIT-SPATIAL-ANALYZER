@@ -39,6 +39,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
             RibbonPanel model = CreatePanel(application, ModelPanelName);
             model.AddItem(QualifyRegions());
             model.AddItem(OutlineRegions());
+            model.AddItem(PlaceRooms());
             model.AddSeparator();
             AddDiagnostics(model);
 
@@ -242,6 +243,18 @@ public class SpatialAnalyzerApplication : IExternalApplication
         + "would appear if they did divide rooms, by switching the flag on, asking Revit again and "
         + "rolling the change back. Nothing is written, and only you can say which of them really "
         + "divide a room.");
+
+    private static PushButtonData PlaceRooms() => Button<PlaceRoomsCommand>(
+        "SpatialAnalyzerPlaceRooms",
+        "Place Rooms",
+        RibbonIcons.RoomBounding,
+        "Put a real room in each space the model encloses but does not report.",
+        "Lays a room separation line along each wall Revit is told to ignore, then places a room in "
+        + "the space that results. Both are additions: no wall is edited, no flag is switched and no "
+        + "group is opened, which is what lets it work on walls inside a group at all. This one writes "
+        + "to the model and asks first. Each room's area is checked against the space it was meant to "
+        + "fill, and any that came back larger are reported rather than counted as successes. One undo "
+        + "removes the rooms and the lines together.");
 
     private static PushButtonData ShowIgnoredWalls() => Button<ShowIgnoredWallsCommand>(
         "SpatialAnalyzerShowIgnoredWalls",
