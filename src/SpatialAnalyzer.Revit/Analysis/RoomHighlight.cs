@@ -33,6 +33,17 @@ public static class RoomHighlight
 
     private static readonly Color Ways = new(0, 170, 60);
 
+    /// <summary>
+    /// A paler yellow for floors, which are washed rather than painted.
+    /// </summary>
+    private static readonly Color SoftWash = new(255, 245, 170);
+
+    /// <summary>
+    /// How transparent that wash is, as a percentage. Nearly all the way, so
+    /// the floor finish and everything drawn on it stay readable through it.
+    /// </summary>
+    private const int WashTransparency = 90;
+
     private const int EmphasisLineWeight = 6;
 
     public const string TransactionName = "Spatial Analyzer - highlight room";
@@ -176,10 +187,18 @@ public static class RoomHighlight
         foreach (long id in elementIds)
         {
             var elementId = new ElementId(id);
-            if (document.GetElement(elementId) is null)
+            Element? element = document.GetElement(elementId);
+            if (element is null)
             {
                 continue;
             }
+
+            // A floor covers the whole room, so painting it the same solid
+            // yellow as the furniture standing on it hides everything the
+            // highlight is meant to show. It gets a wash instead: the same
+            // colour, almost entirely transparent, so the room reads as a
+            // tinted area with its contents still legible on top.
+            bool isFloor = element.Category?.BuiltInCategory == BuiltInCategory.OST_Floors;
 
             OverrideGraphicSettings settings;
             try
@@ -191,18 +210,23 @@ public static class RoomHighlight
                 settings = new OverrideGraphicSettings()
                     .SetProjectionLineColor(colour)
                     .SetCutLineColor(colour)
-                    .SetProjectionLineWeight(EmphasisLineWeight)
-                    .SetCutLineWeight(EmphasisLineWeight);
+                    .SetProjectionLineWeight(isFloor ? 1 : EmphasisLineWeight)
+                    .SetCutLineWeight(isFloor ? 1 : EmphasisLineWeight);
 
                 if (solidFill != ElementId.InvalidElementId)
                 {
                     settings = settings
                         .SetSurfaceForegroundPatternVisible(true)
                         .SetSurfaceForegroundPatternId(solidFill)
-                        .SetSurfaceForegroundPatternColor(colour)
+                        .SetSurfaceForegroundPatternColor(isFloor ? SoftWash : colour)
                         .SetCutForegroundPatternVisible(true)
                         .SetCutForegroundPatternId(solidFill)
-                        .SetCutForegroundPatternColor(colour);
+                        .SetCutForegroundPatternColor(isFloor ? SoftWash : colour);
+                }
+
+                if (isFloor)
+                {
+                    settings = settings.SetSurfaceTransparency(WashTransparency);
                 }
 
                 view.SetElementOverrides(elementId, settings);

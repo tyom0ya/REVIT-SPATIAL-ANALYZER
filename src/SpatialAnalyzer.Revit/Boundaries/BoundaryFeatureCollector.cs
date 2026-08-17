@@ -44,10 +44,31 @@ public static class BoundaryFeatureCollector
     {
         Dictionary<long, List<Curve>> curvesByElement = CollectCurvesByElement(room, options);
         var found = new List<Found>();
+        List<Wall>? wallsInTheModel = null;
 
         foreach ((long boundingElementId, List<Curve> curves) in curvesByElement)
         {
             Element? bounding = document.GetElement(new ElementId(boundingElementId));
+
+            // A boundary this project drew itself: a room separation line laid
+            // along a wall the model refuses to bound rooms with. The line has
+            // no inserts and never will - a curve hosts nothing - but the wall
+            // lying under it has the door in it, and that door is what admits a
+            // person to the space. Without this a bathroom divided by such a
+            // wall comes back with no way in and is rejected, which is both
+            // wrong and the exact opposite of what drawing the line was for.
+            if (bounding is not HostObject && bounding is CurveElement)
+            {
+                wallsInTheModel ??= WallsIn(document);
+
+                foreach (Wall beneath in WallsAlong(wallsInTheModel, curves))
+                {
+                    CollectFrom(document, beneath, curves, beneath.Width, boundingElementId, found);
+                }
+
+                continue;
+            }
+
             if (bounding is not HostObject host)
             {
                 continue;
@@ -92,6 +113,91 @@ public static class BoundaryFeatureCollector
             .OrderBy(f => f.Feature.Kind)
             .ThenBy(f => f.Feature.Element.Id.Value)
             .ToList();
+    }
+
+    /// <summary>
+    /// Gathers what is set into one host and lands on these boundary curves.
+    ///
+    /// Shared so that a wall found under a separation line is examined by
+    /// exactly the same rule as a wall that bounds the space directly. Two
+    /// routes to the same question deserve one answer.
+    /// </summary>
+    private static void CollectFrom(
+        Document document,
+        HostObject host,
+        List<Curve> curves,
+        double allowance,
+        long boundingElementId,
+        List<Found> found)
+    {
+        foreach (ElementId insertId in host.FindInserts(true, false, true, true))
+        {
+            Element? insert = document.GetElement(insertId);
+            if (insert is null || !TryProjectOntoBoundary(insert, curves, allowance, out double distance))
+            {
+                continue;
+            }
+
+            found.Add(new Found(
+                new BoundaryFeature(Describe(document, insert), Classify(insert)),
+                boundingElementId,
+                distance));
+
+            if (insert is Wall { CurtainGrid: not null } curtainWall)
+            {
+                foreach (Found panel in DoorPanelsOf(document, curtainWall, boundingElementId, distance))
+                {
+                    found.Add(panel);
+                }
+            }
+        }
+    }
+
+    private static List<Wall> WallsIn(Document document) =>
+        new FilteredElementCollector(document)
+            .OfCategory(BuiltInCategory.OST_Walls)
+            .WhereElementIsNotElementType()
+            .OfType<Wall>()
+            .ToList();
+
+    /// <summary>
+    /// The walls lying along a set of boundary curves.
+    ///
+    /// A separation line is drawn on a wall's centre line, so the wall is
+    /// found by asking which centre lines the boundary runs down. Both ends are
+    /// tested and both must land on it: a wall that merely crosses the boundary
+    /// somewhere is not the wall the line was drawn along, and lending it its
+    /// doors would credit a space with a way in that opens somewhere else.
+    /// </summary>
+    private static IEnumerable<Wall> WallsAlong(List<Wall> walls, List<Curve> curves)
+    {
+        foreach (Wall wall in walls)
+        {
+            if (wall.Location is not LocationCurve location)
+            {
+                continue;
+            }
+
+            double half = wall.Width / 2.0;
+
+            foreach (Curve curve in curves)
+            {
+                if (LandsOn(location.Curve, curve.GetEndPoint(0), half) &&
+                    LandsOn(location.Curve, curve.GetEndPoint(1), half))
+                {
+                    yield return wall;
+                    break;
+                }
+            }
+        }
+    }
+
+    private static bool LandsOn(Curve centreLine, XYZ point, double allowance)
+    {
+        var flattened = new XYZ(point.X, point.Y, centreLine.GetEndPoint(0).Z);
+        IntersectionResult? projection = centreLine.Project(flattened);
+
+        return projection is not null && projection.Distance <= allowance;
     }
 
     private static IEnumerable<Found> DoorPanelsOf(

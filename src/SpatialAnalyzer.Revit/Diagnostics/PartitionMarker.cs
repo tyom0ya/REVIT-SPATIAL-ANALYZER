@@ -55,6 +55,51 @@ public static class PartitionMarker
 
     public const string FoundStyleName = "Spatial Analyzer - Room Not Reported";
 
+    public const string OtherStyleName = "Spatial Analyzer - Other Space Found";
+
+    /// <summary>Grey for spaces found but not flagged, so they recede.</summary>
+    private static readonly Color OtherColour = new(150, 150, 150);
+
+    /// <summary>
+    /// Draws one face's outline, skipping edges Revit is too small to draw.
+    /// </summary>
+    private static void Trace(
+        AnalysisContext context,
+        IReadOnlyList<Point2D> outline,
+        double elevation,
+        double shortest,
+        GraphicsStyle? style,
+        List<string> failures)
+    {
+        for (int i = 0; i < outline.Count; i++)
+        {
+            Point2D from = outline[i];
+            Point2D to = outline[(i + 1) % outline.Count];
+
+            var a = new XYZ(from.X, from.Y, elevation);
+            var b = new XYZ(to.X, to.Y, elevation);
+
+            if (a.DistanceTo(b) <= shortest)
+            {
+                continue;
+            }
+
+            try
+            {
+                DetailCurve line = context.Document.Create.NewDetailCurve(context.View, Line.CreateBound(a, b));
+                if (style is not null)
+                {
+                    line.LineStyle = style;
+                }
+            }
+            catch (Exception exception)
+            {
+                failures.Add($"outline: {exception.GetType().Name}: {exception.Message}");
+                return;
+            }
+        }
+    }
+
     public sealed record Result(
         int WallsMarked,
         int EndsInOpenAir,
@@ -181,9 +226,26 @@ public static class PartitionMarker
         List<string> failures)
     {
         GraphicsStyle? style = GapLineStyle(context.Document, FoundStyleName, FoundColour, failures);
+
+        // Every other face gets a faint outline too. A space this command draws
+        // nothing in is ambiguous in the worst way: the face may exist and have
+        // failed the test that flags it, or it may never have formed at all,
+        // and an empty plan looks the same either way. A grey outline where a
+        // room should be says the traversal found the space and the filter
+        // dropped it; no outline at all says the space never closed. Those have
+        // opposite fixes and guessing between them has cost enough already.
+        GraphicsStyle? other = GapLineStyle(context.Document, OtherStyleName, OtherColour, failures);
+
+        var flagged = new HashSet<PlanFace>(PartitionSurvey.HiddenBy(survey));
+
+        foreach (PlanFace quiet in survey.Subdivision.Faces.Where(f => !flagged.Contains(f)))
+        {
+            Trace(context, quiet.Outline, elevation, shortest, other, failures);
+        }
+
         int drawn = 0;
 
-        foreach (PlanFace face in PartitionSurvey.HiddenBy(survey))
+        foreach (PlanFace face in flagged)
         {
             IReadOnlyList<Point2D> outline = face.Outline;
             bool complete = true;
