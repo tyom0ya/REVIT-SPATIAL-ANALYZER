@@ -41,18 +41,31 @@ public static class PartitionSurvey
         int WallsConsidered,
         PartitionArrangement Arrangement,
         PlanSubdivision Subdivision,
+        IReadOnlyList<Point2D> WhereRoomsAlreadyAre,
         IReadOnlyList<string> Failures);
 
     /// <summary>
-    /// The faces that exist only because of a wall the model ignores - the
-    /// rooms it is not reporting.
+    /// The spaces the walls enclose that have no room in them.
     ///
-    /// A face bounded entirely by walls Revit already respects is a room Revit
-    /// already gives us, so it is not news. One with an ignored wall on its
-    /// boundary is.
+    /// This was once "every face with an ignored wall on its boundary", which
+    /// sounded right and was not. It missed spaces that Revit fails to report
+    /// for reasons of its own, and it kept apartments that already had rooms
+    /// merely because one of their walls happened to be ignored. Both were
+    /// visible on the acceptance model the moment every face was drawn rather
+    /// than only the flagged ones.
+    ///
+    /// Whether a wall is room bounding was never the question. The question is
+    /// whether the building has a space here that the model does not account
+    /// for, and that is answered by asking where the rooms already are.
     /// </summary>
-    public static IReadOnlyList<PlanFace> HiddenBy(Result survey) =>
-        survey.Subdivision.Faces.Where(f => f.TouchesAWallIgnoredForRooms).ToList();
+    public static IReadOnlyList<PlanFace> HiddenBy(Result survey)
+    {
+        ArgumentNullException.ThrowIfNull(survey);
+
+        return survey.Subdivision.Faces
+            .Where(face => !survey.WhereRoomsAlreadyAre.Any(at => PlanFaces.Contains(face, at)))
+            .ToList();
+    }
 
     /// <summary>
     /// Reads every wall in this view that Revit is told not to treat as room
@@ -110,7 +123,37 @@ public static class PartitionSurvey
             ignoredCount,
             PartitionLoops.Find(partitions, toleranceInternalFeet),
             PlanFaces.Find(plan, toleranceInternalFeet),
+            WhereRoomsAre(context),
             failures);
+    }
+
+    /// <summary>
+    /// Where the rooms on this level already stand.
+    ///
+    /// A room's own location point rather than anything computed, so a space
+    /// counts as accounted for exactly when Revit itself has put a room in it.
+    /// Rooms with no area are unplaced and stand nowhere.
+    /// </summary>
+    private static IReadOnlyList<Point2D> WhereRoomsAre(AnalysisContext context)
+    {
+        var at = new List<Point2D>();
+
+        foreach (Element element in new FilteredElementCollector(context.Document)
+                     .OfCategory(BuiltInCategory.OST_Rooms)
+                     .WhereElementIsNotElementType())
+        {
+            if (element is not Autodesk.Revit.DB.Architecture.Room room ||
+                room.LevelId != context.Level.Id ||
+                room.Area <= 0 ||
+                room.Location is not LocationPoint point)
+            {
+                continue;
+            }
+
+            at.Add(new Point2D(point.Point.X, point.Point.Y));
+        }
+
+        return at;
     }
 
     /// <summary>
