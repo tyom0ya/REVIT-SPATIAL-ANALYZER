@@ -139,6 +139,7 @@ public class SpatialAnalyzerApplication : IExternalApplication
         pulldown.AddSeparator();
         pulldown.AddPushButton(SurveyRoomBounding());
         pulldown.AddPushButton(ShowIgnoredWalls());
+        pulldown.AddPushButton(ShowExteriorWalls());
         pulldown.AddPushButton(InspectElement());
         pulldown.AddPushButton(AuditModel());
         pulldown.AddPushButton(ProbeCircuits());
@@ -255,6 +256,18 @@ public class SpatialAnalyzerApplication : IExternalApplication
         + "to the model and asks first. Each room's area is checked against the space it was meant to "
         + "fill, and any that came back larger are reported rather than counted as successes. One undo "
         + "removes the rooms and the lines together.");
+
+    private static PushButtonData ShowExteriorWalls() => Button<ShowExteriorWallsCommand>(
+        "SpatialAnalyzerShowExteriorWalls",
+        "Exterior Walls",
+        RibbonIcons.RoomBounding,
+        "Colour the walls that face outside, judged on what is either side of them.",
+        "Orange where a wall has building on one side and open air on the other, grey where it has "
+        + "building on both, purple where it stands on its own with neither. The wall's Function "
+        + "parameter is not consulted: it is set by hand, and a curtain wall left as Interior or a "
+        + "party wall marked Exterior are common enough to make it unreliable. A courtyard cannot be "
+        + "told from a room in plan, so walls around a light well come back grey. Overrides only; one "
+        + "undo puts the view back.");
 
     private static PushButtonData ShowIgnoredWalls() => Button<ShowIgnoredWallsCommand>(
         "SpatialAnalyzerShowIgnoredWalls",
