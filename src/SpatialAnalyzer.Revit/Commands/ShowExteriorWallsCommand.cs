@@ -82,6 +82,8 @@ public class ShowExteriorWallsCommand : IExternalCommand
         AnalysisContext context = resolution.Context!;
         var byExposure = new Dictionary<WallExposure, int>();
         int exits = 0;
+        int judged = 0;
+        int disagreed = 0;
 
         try
         {
@@ -122,11 +124,19 @@ public class ShowExteriorWallsCommand : IExternalCommand
 
             BuildingFootprint footprint = BuildingFootprint.Around(cloud, ReachFeet);
 
-            IReadOnlyList<WallExposureFinding> found = ExteriorWalls.Classify(
-                plan,
-                footprint,
-                (walls.Count == 0 ? 0 : walls.Max(w => w.Width) / 2.0) + EveryFeet,
-                stepAside);
+            // Read from the solids rather than the centre lines. A centre line
+            // gives one answer for a whole wall; the faces give one each, and a
+            // wall that faces the street along part of its run and the building
+            // along the rest is exactly the case that was coming back wrong.
+            var wallFaces = new List<WallFace>();
+            foreach (Wall wall in walls)
+            {
+                wallFaces.AddRange(WallFaceReader.Read(wall));
+            }
+
+            IReadOnlyList<FaceVerdict> found = ExteriorFaces.Classify(wallFaces, footprint, stepAside);
+            judged = found.Count;
+            disagreed = found.Count(x => x.Confidence < 0.8);
 
             using var transaction = new Transaction(context.Document, "Spatial Analyzer show exterior walls");
             transaction.Start();
@@ -138,7 +148,7 @@ public class ShowExteriorWallsCommand : IExternalCommand
             // run. A failure that returns quietly is worse than one that stops.
             DrawOutline(context, footprint);
 
-            foreach (WallExposureFinding finding in found)
+            foreach (FaceVerdict finding in found)
             {
                 byExposure[finding.Exposure] = byExposure.GetValueOrDefault(finding.Exposure) + 1;
 
@@ -152,7 +162,7 @@ public class ShowExteriorWallsCommand : IExternalCommand
                 try
                 {
                     context.View.SetElementOverrides(
-                        new ElementId(finding.Wall.Value),
+                        new ElementId(finding.Element.Value),
                         new OverrideGraphicSettings()
                             .SetProjectionLineColor(colour)
                             .SetCutLineColor(colour)
@@ -168,7 +178,7 @@ public class ShowExteriorWallsCommand : IExternalCommand
 
             exits = MarkExitDoors(
                 context,
-                found.Where(x => x.Exposure == WallExposure.Exterior).Select(x => x.Wall.Value).ToHashSet(),
+                found.Where(x => x.Exposure == WallExposure.Exterior).Select(x => x.Element.Value).ToHashSet(),
                 footprint,
                 walls.Select(w => (w.Id.Value, ((LocationCurve)w.Location).Curve, w.Width / 2.0)).ToList());
 
@@ -187,6 +197,13 @@ public class ShowExteriorWallsCommand : IExternalCommand
             string.Create(CultureInfo.InvariantCulture, $"orange, facing outside:  {byExposure.GetValueOrDefault(WallExposure.Exterior)}"),
             string.Create(CultureInfo.InvariantCulture, $"grey, building both sides:  {byExposure.GetValueOrDefault(WallExposure.Interior)}"),
             string.Create(CultureInfo.InvariantCulture, $"purple, could not be judged:  {byExposure.GetValueOrDefault(WallExposure.Unknown)}"),
+            string.Empty,
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"Judged on {judged} wall(s) by the faces of their own solids."),
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"   walls where the faces disagreed:  {disagreed}"),
             string.Empty,
             string.Create(CultureInfo.InvariantCulture, $"GREEN, DOORS LEADING OUT:  {exits}"),
             string.Empty,
@@ -222,7 +239,7 @@ public class ShowExteriorWallsCommand : IExternalCommand
     /// </summary>
 
     /// <summary>How far a ray from a door is walked before giving up, in feet.</summary>
-    private const double RayReachFeet = 40.0;
+    private const double RayReachFeet = 15.0;
 
     /// <summary>How far apart the steps along that ray are.</summary>
     private const double RayStepFeet = 0.5;
@@ -243,35 +260,6 @@ public class ShowExteriorWallsCommand : IExternalCommand
     /// already faces outside never gets here, so a recessed entrance and a door
     /// in a return wall are what it is for.
     /// </summary>
-
-    /// <summary>
-    /// Whether the door has a room one side of it and nothing the other.
-    ///
-    /// Revit records both for every door, so this is the model's own answer
-    /// rather than something inferred from lines on a plan, and where the rooms
-    /// are placed it is the most reliable of the three tests.
-    ///
-    /// Exactly one side must be empty. Both empty means the door stands
-    /// somewhere the model has no rooms at all - a plant deck, an unmodelled
-    /// floor - and says nothing about whether it leads outside. Reporting that
-    /// as an exit would fill a schedule of escape routes with doors between two
-    /// store cupboards nobody has got round to placing rooms in.
-    /// </summary>
-    private static bool OpensOntoNothing(FamilyInstance door, Phase phase)
-    {
-        try
-        {
-            bool toIsEmpty = door.get_ToRoom(phase) is null;
-            bool fromIsEmpty = door.get_FromRoom(phase) is null;
-
-            return toIsEmpty != fromIsEmpty;
-        }
-        catch (Exception)
-        {
-            // A door that will not answer is left to the other two tests.
-            return false;
-        }
-    }
 
     private static bool EscapesTheBuilding(
         AnalysisContext context,
@@ -357,19 +345,21 @@ public class ShowExteriorWallsCommand : IExternalCommand
                 continue;
             }
 
-            // Three ways to be a way out, and a door needs only one of them.
+            // Two ways to be a way out, and a door needs only one of them.
+            //
+            // Revit records the room either side of a door, and a door with a
+            // room on one side and nothing on the other looks like it opens
+            // onto the world. That test was here and has been taken out: it
+            // holds only where every space has a room in it, and on a model
+            // where the bathrooms are unroomed every bathroom door has a room
+            // one side and nothing the other. It marked most of the building
+            // as a way out. What a room is missing from is a fact about the
+            // model, not about the building.
             //
             // The first is its host: a door in a wall that faces outside leads
             // outside. That catches most of them and costs nothing.
             //
-            // The second is what Revit already knows. A door records the room
-            // either side of it, and one with a room on one side and nothing on
-            // the other has nothing on that side to be in - it opens onto the
-            // world. This is the cheapest and most reliable of the three where
-            // the model has its rooms placed, because it is the model's own
-            // answer rather than a reading of the geometry.
-            //
-            // The third is the door itself. A door set back in an entrance
+            // The second is the door itself. A door set back in an entrance
             // recess, or hung in the short return wall beside one, has a host
             // that never scored as facade, and in a model with no rooms placed
             // the second test says nothing either. For those a ray is walked
@@ -379,7 +369,6 @@ public class ShowExteriorWallsCommand : IExternalCommand
 
             bool wayOut =
                 (host is long id && exteriorWalls.Contains(id))
-                || OpensOntoNothing(door, context.Phase)
                 || EscapesTheBuilding(context, door, footprint, wallCurves);
 
             if (!wayOut)
