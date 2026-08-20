@@ -9,8 +9,40 @@ namespace SpatialAnalyzer.Core.Spatial;
 public sealed record PlanWall(RevitElementId Id, BoundaryCurve CentreLine, bool IgnoredForRooms);
 
 /// <summary>
+/// One straight run of boundary, and where it came from.
+///
+/// A wall centre line says where a wall is on average. It is not where the wall
+/// stands: a room bounded by centre lines is half a wall too big in every
+/// direction, and a wall whose two sides bound different rooms has only one
+/// centre line to offer both. The face of the wall is the surface somebody
+/// paints, and it is what the room is actually bounded by.
+///
+/// So the arrangement is fed traces rather than walls. The traversal does not
+/// care where a segment came from - it needs two endpoints and something to
+/// blame the resulting edge on - which is why this could be introduced without
+/// disturbing what already works.
+/// </summary>
+/// <param name="Face">
+/// Which face of the element drew this, as an index into whatever list the
+/// caller read them from, or <see cref="PlanFaces.NoFace"/> when the trace came
+/// from a centre line and there is no face to name.
+/// </param>
+public sealed record PlanTrace(
+    RevitElementId Element,
+    int Face,
+    Point2D A,
+    Point2D B,
+    bool IgnoredForRooms);
+
+/// <summary>
 /// A space enclosed by walls, however the model feels about them.
 /// </summary>
+/// <param name="EdgeFaces">
+/// Which face drew each edge, in step with <c>Outline</c>: entry i belongs to
+/// the edge running from outline point i to the one after it. <c>Faces</c> says
+/// which faces took part; this says where each of them is, which is what lets a
+/// caller ask whether a face looks into this loop or out of it.
+/// </param>
 /// <param name="TouchesAWallIgnoredForRooms">
 /// True when at least one wall on this face's boundary is one the model walks
 /// past when working out rooms. Those are the faces worth looking at: a face
@@ -21,7 +53,9 @@ public sealed record PlanFace(
     IReadOnlyList<Point2D> Outline,
     AreaMeasurement Area,
     IReadOnlyList<RevitElementId> Walls,
-    bool TouchesAWallIgnoredForRooms);
+    bool TouchesAWallIgnoredForRooms,
+    IReadOnlyList<int> Faces,
+    IReadOnlyList<int> EdgeFaces);
 
 /// <param name="FacesTooNarrowToStandIn">
 /// Faces set aside as construction gaps rather than spaces. Counted rather
@@ -228,6 +262,24 @@ public static class PlanFaces
     public static PlanSubdivision Find(IReadOnlyList<PlanWall> walls, double toleranceInternalFeet)
     {
         ArgumentNullException.ThrowIfNull(walls);
+        return FindAmong(Flatten(walls), toleranceInternalFeet);
+    }
+
+    /// <summary>
+    /// The same subdivision, from traces the caller has already worked out.
+    ///
+    /// This is the whole of the algorithm; the wall overload above is a way of
+    /// producing traces from centre lines and nothing more. The traversal never
+    /// knew what a wall was - it needs two endpoints and something to blame the
+    /// edge on - so feeding it the faces of the wall instead of its centre line
+    /// changes what the answer means without changing a line of how it is
+    /// reached.
+    /// </summary>
+    public static PlanSubdivision FindAmong(
+        IReadOnlyList<PlanTrace> traces,
+        double toleranceInternalFeet)
+    {
+        ArgumentNullException.ThrowIfNull(traces);
 
         if (double.IsNaN(toleranceInternalFeet) || toleranceInternalFeet < 0)
         {
@@ -237,13 +289,15 @@ public static class PlanFaces
                 "Tolerance must be a number and cannot be negative.");
         }
 
-        List<Piece> pieces = SplitWhereTheyCross(Flatten(walls), toleranceInternalFeet);
+        int elements = traces.Select(t => t.Element).Distinct().Count();
+
+        List<Piece> pieces = SplitWhereTheyCross(Cut(traces), toleranceInternalFeet);
 
         if (pieces.Count == 0)
         {
             return new PlanSubdivision(
                 Array.Empty<PlanFace>(),
-                walls.Count,
+                elements,
                 0,
                 0,
                 toleranceInternalFeet);
@@ -274,7 +328,7 @@ public static class PlanFaces
 
         return new PlanSubdivision(
             faces.OrderByDescending(f => f.Area.InternalSquareFeet).ToList(),
-            walls.Count,
+            elements,
             pieces.Count,
             tooNarrow,
             toleranceInternalFeet);
@@ -293,18 +347,18 @@ public static class PlanFaces
     }
 
     /// <summary>One straight piece of a wall, before any splitting.</summary>
-    private sealed record Piece(Point2D A, Point2D B, RevitElementId Wall, bool Ignored);
+    private sealed record Piece(Point2D A, Point2D B, RevitElementId Wall, int Face, bool Ignored);
 
     /// <summary>
-    /// Reduces every wall to straight pieces.
+    /// The trace a wall centre line draws, one straight run at a time.
     ///
     /// An arc arrives as the tessellation Revit itself drew, so a curved wall
     /// is followed rather than straightened, and no curve mathematics is
     /// reimplemented here.
     /// </summary>
-    private static List<Piece> Flatten(IReadOnlyList<PlanWall> walls)
+    private static List<PlanTrace> Flatten(IReadOnlyList<PlanWall> walls)
     {
-        var pieces = new List<Piece>();
+        var traces = new List<PlanTrace>();
 
         foreach (PlanWall wall in walls)
         {
@@ -314,8 +368,39 @@ public static class PlanFaces
             {
                 if (points[i] != points[i + 1])
                 {
-                    pieces.Add(new Piece(points[i], points[i + 1], wall.Id, wall.IgnoredForRooms));
+                    traces.Add(new PlanTrace(
+                        wall.Id,
+                        NoFace,
+                        points[i],
+                        points[i + 1],
+                        wall.IgnoredForRooms));
                 }
+            }
+        }
+
+        return traces;
+    }
+
+    /// <summary>
+    /// What a trace whose segment came from a centre line names as its face,
+    /// there being none.
+    /// </summary>
+    public const int NoFace = -1;
+
+    private static List<Piece> Cut(IReadOnlyList<PlanTrace> traces)
+    {
+        var pieces = new List<Piece>(traces.Count);
+
+        foreach (PlanTrace trace in traces)
+        {
+            if (trace.A != trace.B)
+            {
+                pieces.Add(new Piece(
+                    trace.A,
+                    trace.B,
+                    trace.Element,
+                    trace.Face,
+                    trace.IgnoredForRooms));
             }
         }
 
@@ -333,6 +418,8 @@ public static class PlanFaces
     private static List<Piece> SplitWhereTheyCross(List<Piece> pieces, double tolerance)
     {
         var split = new List<Piece>();
+        var near = Bucket(pieces, tolerance);
+        var candidates = new HashSet<int>();
 
         for (int i = 0; i < pieces.Count; i++)
         {
@@ -340,7 +427,16 @@ public static class PlanFaces
 
             var cuts = new List<double> { 0.0, 1.0 };
 
-            for (int j = 0; j < pieces.Count; j++)
+            candidates.Clear();
+            foreach ((long, long) cell in CellsOver(piece, tolerance))
+            {
+                if (near.TryGetValue(cell, out List<int>? sharing))
+                {
+                    candidates.UnionWith(sharing);
+                }
+            }
+
+            foreach (int j in candidates)
             {
                 if (i != j && TryCross(piece, pieces[j], tolerance, out double at))
                 {
@@ -363,6 +459,65 @@ public static class PlanFaces
         }
 
         return split;
+    }
+
+    /// <summary>
+    /// How wide a bucket is, in feet.
+    ///
+    /// Only a search structure: which pieces are tested against each other, not
+    /// which of them cross. Every pair that shares a bucket is still tested
+    /// exactly as before and every pair that does not share one cannot touch,
+    /// because each piece is filed under every bucket its bounding box reaches
+    /// and that box is grown by the tolerance first. The answer is the same as
+    /// testing all of them; the time is not.
+    ///
+    /// Ten feet is a compromise. Smaller buckets mean fewer pairs tested and
+    /// more buckets for a long wall to be filed under; a storey of a building
+    /// at this size is a few hundred buckets across.
+    /// </summary>
+    private const double BucketFeet = 10.0;
+
+    private static Dictionary<(long, long), List<int>> Bucket(List<Piece> pieces, double tolerance)
+    {
+        var near = new Dictionary<(long, long), List<int>>();
+
+        for (int i = 0; i < pieces.Count; i++)
+        {
+            foreach ((long, long) cell in CellsOver(pieces[i], tolerance))
+            {
+                if (!near.TryGetValue(cell, out List<int>? sharing))
+                {
+                    sharing = new List<int>();
+                    near[cell] = sharing;
+                }
+
+                sharing.Add(i);
+            }
+        }
+
+        return near;
+    }
+
+    /// <summary>
+    /// Every bucket a piece reaches, its bounding box first grown by the
+    /// tolerance so that two pieces which only just touch still meet in one.
+    /// </summary>
+    private static IEnumerable<(long, long)> CellsOver(Piece piece, double tolerance)
+    {
+        double grow = Math.Max(tolerance, 0);
+
+        long fromX = (long)Math.Floor((Math.Min(piece.A.X, piece.B.X) - grow) / BucketFeet);
+        long toX = (long)Math.Floor((Math.Max(piece.A.X, piece.B.X) + grow) / BucketFeet);
+        long fromY = (long)Math.Floor((Math.Min(piece.A.Y, piece.B.Y) - grow) / BucketFeet);
+        long toY = (long)Math.Floor((Math.Max(piece.A.Y, piece.B.Y) + grow) / BucketFeet);
+
+        for (long x = fromX; x <= toX; x++)
+        {
+            for (long y = fromY; y <= toY; y++)
+            {
+                yield return (x, y);
+            }
+        }
     }
 
     private static Point2D Along(Piece piece, double t) =>
@@ -427,10 +582,17 @@ public static class PlanFaces
         private readonly List<Point2D> _vertices = new();
         private readonly List<Edge> _edges = new();
         private readonly Dictionary<int, List<int>> _outgoing = new();
+        private readonly Dictionary<(long, long), List<int>> _near = new();
+        private readonly double _cell;
         private readonly bool[] _dead;
 
         internal Graph(List<Piece> pieces, double tolerance)
         {
+            // A bucket exactly the tolerance wide, so anything close enough to
+            // be the same vertex is at most one bucket away on each axis and
+            // the nine around a point are the whole search.
+            _cell = Math.Max(tolerance, 1e-9);
+
             var seen = new HashSet<(int, int)>();
 
             foreach (Piece piece in pieces)
@@ -458,7 +620,7 @@ public static class PlanFaces
             }
         }
 
-        private sealed record Edge(int From, int To, double Angle, RevitElementId Wall, bool Ignored);
+        private sealed record Edge(int From, int To, double Angle, RevitElementId Wall, int Face, bool Ignored);
 
         private void Add(int from, int to, Piece piece)
         {
@@ -467,6 +629,7 @@ public static class PlanFaces
                 to,
                 Math.Atan2(_vertices[to].Y - _vertices[from].Y, _vertices[to].X - _vertices[from].X),
                 piece.Wall,
+                piece.Face,
                 piece.Ignored));
 
             if (!_outgoing.TryGetValue(from, out List<int>? fan))
@@ -480,15 +643,37 @@ public static class PlanFaces
 
         private int VertexAt(Point2D point, double tolerance)
         {
-            for (int i = 0; i < _vertices.Count; i++)
+            long cx = (long)Math.Floor(point.X / _cell);
+            long cy = (long)Math.Floor(point.Y / _cell);
+
+            for (long dx = -1; dx <= 1; dx++)
             {
-                if (_vertices[i].DistanceTo(point) <= tolerance)
+                for (long dy = -1; dy <= 1; dy++)
                 {
-                    return i;
+                    if (!_near.TryGetValue((cx + dx, cy + dy), out List<int>? sharing))
+                    {
+                        continue;
+                    }
+
+                    foreach (int i in sharing)
+                    {
+                        if (_vertices[i].DistanceTo(point) <= tolerance)
+                        {
+                            return i;
+                        }
+                    }
                 }
             }
 
             _vertices.Add(point);
+
+            if (!_near.TryGetValue((cx, cy), out List<int>? own))
+            {
+                own = new List<int>();
+                _near[(cx, cy)] = own;
+            }
+
+            own.Add(_vertices.Count - 1);
             return _vertices.Count - 1;
         }
 
@@ -501,24 +686,57 @@ public static class PlanFaces
         /// </summary>
         internal void PruneDeadEnds()
         {
-            bool removedSomething = true;
+            // Worked from a queue rather than by sweeping the whole graph over
+            // and over. Killing one hanging edge exposes the next one back
+            // along the same chain, and the only vertex whose count changed is
+            // the one at the far end - so that is the only one worth looking at
+            // again. A plan traced from wall faces has a hanging end at every
+            // free wall end and every reveal, and re-reading every vertex once
+            // per link of every chain is the difference between a moment and a
+            // minute.
+            var alive = new int[_vertices.Count];
 
-            while (removedSomething)
+            foreach ((int vertex, List<int> fan) in _outgoing)
             {
-                removedSomething = false;
+                alive[vertex] = fan.Count;
+            }
 
-                foreach ((int vertex, List<int> fan) in _outgoing)
+            var hanging = new Queue<int>();
+
+            for (int vertex = 0; vertex < alive.Length; vertex++)
+            {
+                if (alive[vertex] == 1)
                 {
-                    List<int> alive = fan.Where(e => !_dead[e]).ToList();
-                    if (alive.Count != 1)
-                    {
-                        continue;
-                    }
+                    hanging.Enqueue(vertex);
+                }
+            }
 
-                    _dead[alive[0]] = true;
-                    _dead[Twin(alive[0])] = true;
-                    removedSomething = true;
-                    _ = vertex;
+            while (hanging.Count > 0)
+            {
+                int vertex = hanging.Dequeue();
+
+                if (alive[vertex] != 1)
+                {
+                    continue;
+                }
+
+                int edge = _outgoing[vertex].FirstOrDefault(e => !_dead[e], -1);
+                if (edge < 0)
+                {
+                    alive[vertex] = 0;
+                    continue;
+                }
+
+                _dead[edge] = true;
+                _dead[Twin(edge)] = true;
+
+                alive[vertex]--;
+                int beyond = _edges[edge].To;
+                alive[beyond]--;
+
+                if (alive[beyond] == 1)
+                {
+                    hanging.Enqueue(beyond);
                 }
             }
         }
@@ -601,6 +819,8 @@ public static class PlanFaces
             var outline = new List<Point2D>(walk.Count);
             var segments = new List<BoundarySegment>(walk.Count);
             var walls = new List<RevitElementId>();
+            var faces = new List<int>();
+            var edgeFaces = new List<int>(walk.Count);
             bool touchesIgnored = false;
 
             foreach (int index in walk)
@@ -610,6 +830,7 @@ public static class PlanFaces
                 Point2D to = _vertices[edge.To];
 
                 outline.Add(from);
+                edgeFaces.Add(edge.Face);
                 segments.Add(new BoundarySegment(
                     BoundaryCurve.Straight(from, to),
                     BoundaryReference.Host(edge.Wall)));
@@ -617,6 +838,15 @@ public static class PlanFaces
                 if (!walls.Contains(edge.Wall))
                 {
                     walls.Add(edge.Wall);
+                }
+
+                // Which faces drew this loop, so the caller can ask them
+                // questions the loop itself cannot answer - how high they
+                // reach, which way they look, whether any two of them face
+                // each other across the space.
+                if (edge.Face != NoFace && !faces.Contains(edge.Face))
+                {
+                    faces.Add(edge.Face);
                 }
 
                 touchesIgnored |= edge.Ignored;
@@ -633,7 +863,7 @@ public static class PlanFaces
                 return null;
             }
 
-            return new PlanFace(outline, area, walls, touchesIgnored);
+            return new PlanFace(outline, area, walls, touchesIgnored, faces, edgeFaces);
         }
 
         private static double Shoelace(List<Point2D> outline)

@@ -108,6 +108,17 @@ internal static class RibbonIcons
         Stroked(Polyline(16, 14, 16, 18), Encloses, 2.4),
         Stroked(Polyline(16, 21, 16, 25), Encloses, 2.4));
 
+    /// <summary>
+    /// A space seen from the side: two slabs with the faces of the walls
+    /// between them, and the volume they close filled in.
+    /// </summary>
+    public static ImageSource FaceMasses { get; } = Draw(
+        Filled(Rect(9, 10, 14, 13), Inside),
+        Stroked(Polyline(9, 10, 9, 23), Encloses, 2.4),
+        Stroked(Polyline(23, 10, 23, 23), Encloses, 2.4),
+        Filled(Rect(4, 5, 24, 4), Neutral),
+        Filled(Rect(4, 24, 24, 4), Neutral));
+
     /// <summary>Everything built to interrogate the model rather than report on it.</summary>
     public static ImageSource Diagnostics { get; } = Draw(
         Stroked(Circle(14, 14, 9), Neutral, 2.6),

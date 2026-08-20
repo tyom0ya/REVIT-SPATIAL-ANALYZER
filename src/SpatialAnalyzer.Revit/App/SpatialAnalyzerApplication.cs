@@ -40,6 +40,8 @@ public class SpatialAnalyzerApplication : IExternalApplication
             model.AddItem(QualifyRegions());
             model.AddItem(OutlineRegions());
             model.AddItem(PlaceRooms());
+            model.AddItem(PlaceSpaceMasses());
+            model.AddItem(PlaceFaceMasses());
             model.AddSeparator();
             AddDiagnostics(model);
 
@@ -244,6 +246,34 @@ public class SpatialAnalyzerApplication : IExternalApplication
         + "would appear if they did divide rooms, by switching the flag on, asking Revit again and "
         + "rolling the change back. Nothing is written, and only you can say which of them really "
         + "divide a room.");
+
+    private static PushButtonData PlaceSpaceMasses() => Button<PlaceSpaceMassesCommand>(
+        "SpatialAnalyzerPlaceSpaceMasses",
+        "Space Masses",
+        RibbonIcons.RoomBounding,
+        "Put a solid in every space the plan encloses, whether or not Revit would call it a room.",
+        "A room has to satisfy Revit: bounded by walls it respects, somewhere to stand, one level. "
+        + "The shaft with no door, the space divided by walls inside a group, the riser running the "
+        + "height of the block all fail one of those and are invisible in consequence. A mass is bound "
+        + "by none of it. Running again will not build them twice. This writes to the model and asks "
+        + "first; one undo removes the lot.");
+
+    private static PushButtonData PlaceFaceMasses() => Button<PlaceFaceMassesCommand>(
+        "SpatialAnalyzerPlaceFaceMasses",
+        "Face\nMasses",
+        RibbonIcons.FaceMasses,
+        "Build a solid in every space the flat faces of the model enclose. Run it from a 3D view for the whole building.",
+        "Where Space Masses works from wall centre lines on one level, this works from the faces "
+        + "of the walls themselves. A centre line runs down the middle of a wall, so a room bounded "
+        + "by centre lines is half a wall too big on every side; a face is the surface somebody "
+        + "paints, and a room bounded by faces has the area it actually has. The height is cut "
+        + "first, at the floor slabs the model contains rather than at the level datums somebody "
+        + "named, so each storey is solved on its own and a space stops at the underside of the "
+        + "slab above it. Run from a 3D view it does every floor of the building at once, and a "
+        + "section box on that view narrows it to a wing or a few storeys; run from a plan it does "
+        + "the storey that plan shows. Each mass records in its comments how large it is, how many elements "
+        + "bound it, and whether its bounding faces look at each other in pairs. Gaps are measured "
+        + "and left alone. Writes to the model and asks first; one undo removes the lot.");
 
     private static PushButtonData PlaceRooms() => Button<PlaceRoomsCommand>(
         "SpatialAnalyzerPlaceRooms",

@@ -312,4 +312,127 @@ public class PlanFacesTests
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => PlanFaces.Find(Room(), -1));
     }
+
+    private static PlanTrace Trace(int face, double x0, double y0, double x1, double y1) =>
+        new(new RevitElementId(100 + face), face, new Point2D(x0, y0), new Point2D(x1, y1), false);
+
+    /// <summary>
+    /// The same four walls, given as the traces their faces draw rather than as
+    /// centre lines. The traversal is indifferent to which it was handed, which
+    /// is the whole reason face traces could be introduced at all.
+    /// </summary>
+    private static List<PlanTrace> TracedRoom() => new()
+    {
+        Trace(0, 0, 0, 10, 0),
+        Trace(1, 10, 0, 10, 6),
+        Trace(2, 10, 6, 0, 6),
+        Trace(3, 0, 6, 0, 0),
+    };
+
+    [Fact]
+    public void ARoomTracedByFacesEnclosesTheSameArea()
+    {
+        PlanFace face = Assert.Single(PlanFaces.FindAmong(TracedRoom(), Tolerance).Faces);
+
+        Assert.Equal(60.0, face.Area.InternalSquareFeet, 6);
+    }
+
+    [Fact]
+    public void ALoopNamesTheFacesThatDrewIt()
+    {
+        PlanFace face = Assert.Single(PlanFaces.FindAmong(TracedRoom(), Tolerance).Faces);
+
+        Assert.Equal(new[] { 0, 1, 2, 3 }, face.Faces.OrderBy(f => f));
+    }
+
+    /// <summary>
+    /// A loop reached from centre lines has no face to name, and says so by
+    /// naming none rather than by inventing an index.
+    /// </summary>
+    [Fact]
+    public void ALoopFromCentreLinesNamesNoFaces()
+    {
+        PlanFace face = Assert.Single(PlanFaces.Find(Room(), Tolerance).Faces);
+
+        Assert.Empty(face.Faces);
+    }
+
+    [Fact]
+    public void OneFaceDrawingSeveralEdgesIsNamedOnce()
+    {
+        var traces = new List<PlanTrace>
+        {
+            Trace(0, 0, 0, 5, 0),
+            Trace(0, 5, 0, 10, 0),
+            Trace(1, 10, 0, 10, 6),
+            Trace(2, 10, 6, 0, 6),
+            Trace(3, 0, 6, 0, 0),
+        };
+
+        PlanFace face = Assert.Single(PlanFaces.FindAmong(traces, Tolerance).Faces);
+
+        Assert.Equal(new[] { 0, 1, 2, 3 }, face.Faces.OrderBy(f => f));
+    }
+
+    [Fact]
+    public void ANegativeToleranceIsRefusedForTracesToo()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => PlanFaces.FindAmong(TracedRoom(), -1));
+    }
+
+    /// <summary>
+    /// A grid of walls far longer than one search bucket, crossing each other
+    /// well inside buckets and exactly on their edges.
+    ///
+    /// The search structure files a wall under every bucket it reaches, so a
+    /// bucket too small, or a bounding box not grown by the tolerance, loses
+    /// crossings - and a lost crossing does not fail loudly. It merges two
+    /// rooms into one, which looks like an answer. Twelve by twelve gives a
+    /// hundred and twenty one rooms and there is no other number it can be.
+    /// </summary>
+    [Fact]
+    public void CrossingsAreFoundAcrossTheWholePlanHoweverItIsSearched()
+    {
+        const int lines = 13;
+        const double step = 5.0;
+        double span = (lines - 1) * step;
+
+        var walls = new List<PlanWall>();
+
+        for (int i = 0; i < lines; i++)
+        {
+            walls.Add(Wall(0, i * step, span, i * step));
+            walls.Add(Wall(i * step, 0, i * step, span));
+        }
+
+        PlanSubdivision found = PlanFaces.Find(walls, Tolerance);
+
+        Assert.Equal((lines - 1) * (lines - 1), found.Faces.Count);
+        Assert.All(found.Faces, face => Assert.Equal(step * step, face.Area.InternalSquareFeet, 6));
+    }
+
+    /// <summary>
+    /// Sixty walls hang in a chain off one corner of a closed room, and the
+    /// room still measures.
+    ///
+    /// This pins the outcome rather than the pruning: a walk that runs out
+    /// along a tail and back comes home clockwise and is dropped either way,
+    /// so it holds whether the tails were removed first or not. It is here
+    /// because a plan traced from wall faces has a hanging end at every free
+    /// wall end, and there should be a test that says so.
+    /// </summary>
+    [Fact]
+    public void LongTailsAreTakenAndTheRoomTheyHangFromIsLeft()
+    {
+        List<PlanWall> walls = Room();
+
+        for (int i = 0; i < 60; i++)
+        {
+            walls.Add(Wall(10 + i, 3, 11 + i, 3));
+        }
+
+        PlanFace face = Assert.Single(PlanFaces.Find(walls, Tolerance).Faces);
+
+        Assert.Equal(60.0, face.Area.InternalSquareFeet, 6);
+    }
 }
